@@ -138,6 +138,18 @@ On first boot with a new SD card, the `/ratputer/` directory tree doesn't exist.
 - **Ratputer TX confirmed**: All SX1262 registers verified correct (SF7, BW 500kHz, CR 4/5, sync 0x1424, CRC on)
 - **Heltec V3 RNode receive path**: Has never decoded a single LoRa packet from any source. Shows Ratputer RF as interference (-50 to -81 dBm) but can't decode. This is a Heltec issue, not Ratputer.
 
+### SetModulationParams must be called from STDBY mode
+
+The SX1262 silently rejects `SetModulationParams` (0x8B) when issued from RX or TX mode. Only STDBY_RC and STDBY_XOSC are valid. The command appears to succeed (no error, BUSY goes low), but the hardware ignores the new SF/BW/CR values.
+
+**Symptom**: Radio logs show correct SF/BW/CR (read from software variables), but actual TX airtime is wrong. For example, software says SF9 (expected ~900ms for 168 bytes) but actual TX completes in ~280ms (SF7). Both devices see each other's RF (RSSI visible) but every packet fails CRC. SNR is consistently -17 to -20 dB despite short range.
+
+**Diagnosis**: Add timing instrumentation to `endPacket()` — measure `millis()` from `OP_TX_6X` to `TX_DONE` IRQ. Compare against expected airtime for the configured SF. If actual << expected, the SF didn't apply.
+
+**Root cause**: `setSpreadingFactor()` / `setSignalBandwidth()` / `setCodingRate4()` were called from `main.cpp` after `begin()` had already entered RX mode via `receive()`. The SX1262 silently dropped the `SetModulationParams` command.
+
+**Fix**: `setModulationParams()` now calls `standby()` before issuing the SPI command, ensuring the radio is in a valid mode to accept configuration changes.
+
 ### SX1262 calibration must run after TCXO is enabled
 
 Per SX1262 datasheet Section 13.1.12, if a TCXO is used, it **must** be enabled before calling `calibrate()` or `calibrate_image()`. Calibration locks to whichever oscillator is active. If TCXO isn't enabled yet, calibration uses the internal RC oscillator (~13MHz, ±3% tolerance). Each chip's RC has a different offset, so two devices end up synthesizing slightly different actual frequencies. The combined error can exceed the LoRa demodulation window.

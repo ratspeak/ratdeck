@@ -12,6 +12,7 @@ class FlashStore;
 struct DiscoveredNode {
     RNS::Bytes hash;
     std::string name;
+    std::string identityHex;
     int rssi = 0;
     float snr = 0;
     uint8_t hops = 0;
@@ -30,12 +31,14 @@ public:
         const RNS::Bytes& app_data) override;
 
     void setStorage(SDStore* sd, FlashStore* flash);
+    void setLocalDestHash(const RNS::Bytes& hash) { _localDestHash = hash; }
     void saveContacts();
     void loadContacts();
 
     const std::vector<DiscoveredNode>& nodes() const { return _nodes; }
     int nodeCount() const { return _nodes.size(); }
     const DiscoveredNode* findNode(const RNS::Bytes& hash) const;
+    const DiscoveredNode* findNodeByHex(const std::string& hexHash) const;
     void addManualContact(const std::string& hexHash, const std::string& name);
     void evictStale(unsigned long maxAgeMs = 3600000);
 
@@ -46,5 +49,6 @@ private:
     std::vector<DiscoveredNode> _nodes;
     SDStore* _sd = nullptr;
     FlashStore* _flash = nullptr;
+    RNS::Bytes _localDestHash;
     static constexpr int MAX_NODES = 200;  // PSRAM allows more
 };

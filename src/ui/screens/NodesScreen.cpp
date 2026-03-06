@@ -46,10 +46,17 @@ void NodesScreen::draw(LGFX_TDeck& gfx) {
 
         uint32_t bgCol = (int)i == _selectedIdx ? Theme::SELECTION_BG : Theme::BG;
 
-        // Name + hash
-        std::string hashHex = node.hash.toHex();
+        // Name + identity hash (formatted with colons like own identity)
+        std::string displayHash;
+        if (!node.identityHex.empty() && node.identityHex.size() >= 12) {
+            displayHash = node.identityHex.substr(0, 4) + ":" +
+                          node.identityHex.substr(4, 4) + ":" +
+                          node.identityHex.substr(8, 4);
+        } else {
+            displayHash = node.hash.toHex().substr(0, 8);
+        }
         char buf[64];
-        snprintf(buf, sizeof(buf), "%s [%s]", node.name.c_str(), hashHex.substr(0, 8).c_str());
+        snprintf(buf, sizeof(buf), "%s [%s]", node.name.c_str(), displayHash.c_str());
         gfx.setTextColor(node.saved ? Theme::ACCENT : Theme::PRIMARY, bgCol);
         gfx.setCursor(4, y + 5);
         gfx.print(buf);

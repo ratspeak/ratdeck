@@ -2,6 +2,7 @@
 #include "ui/Theme.h"
 #include "hal/Display.h"
 #include "reticulum/LXMFManager.h"
+#include "reticulum/AnnounceManager.h"
 #include <Arduino.h>
 
 void MessagesScreen::onEnter() {
@@ -46,10 +47,17 @@ void MessagesScreen::draw(LGFX_TDeck& gfx) {
             gfx.fillRect(0, y, Theme::SCREEN_W, rowH, Theme::SELECTION_BG);
         }
 
-        // Peer hash
+        // Peer name (lookup from AnnounceManager) or fallback to hex
+        std::string displayName;
+        if (_am) {
+            const DiscoveredNode* node = _am->findNodeByHex(peerHex);
+            if (node && !node->name.empty()) displayName = node->name;
+        }
+        if (displayName.empty()) displayName = peerHex.substr(0, 16);
+
         gfx.setTextColor(Theme::PRIMARY, (int)i == _selectedIdx ? Theme::SELECTION_BG : Theme::BG);
         gfx.setCursor(4, y + 6);
-        gfx.print(peerHex.substr(0, 16).c_str());
+        gfx.print(displayName.c_str());
 
         // Unread badge
         if (unread > 0) {

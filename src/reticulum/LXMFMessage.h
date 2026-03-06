@@ -21,6 +21,7 @@ struct LXMFMessage {
     LXMFStatus status = LXMFStatus::DRAFT;
     bool incoming = false;
     bool read = false;
+    int retries = 0;
     RNS::Bytes messageId;
 
     static std::vector<uint8_t> packContent(double timestamp, const std::string& content, const std::string& title);

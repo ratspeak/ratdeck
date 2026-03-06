@@ -407,6 +407,7 @@ void setup() {
     bootRender();
     announceManager = new AnnounceManager();
     announceManager->setStorage(&sdStore, &flash);
+    announceManager->setLocalDestHash(rns.destination().hash());
     announceManager->loadContacts();
     announceHandler = RNS::HAnnounceHandler(announceManager);
     RNS::Transport::register_announce_handler(announceHandler);
@@ -545,12 +546,14 @@ void setup() {
     });
 
     messagesScreen.setLXMFManager(&lxmf);
+    messagesScreen.setAnnounceManager(announceManager);
     messagesScreen.setOpenCallback([](const std::string& peerHex) {
         messageView.setPeerHex(peerHex);
         ui.setScreen(&messageView);
     });
 
     messageView.setLXMFManager(&lxmf);
+    messageView.setAnnounceManager(announceManager);
     messageView.setBackCallback([]() {
         ui.setScreen(&messagesScreen);
     });
@@ -632,14 +635,14 @@ void loop() {
             // Screen gets the key next
             bool consumed = ui.handleKey(evt);
 
-            // Tab cycling: ,=left /=right or Alt+J/L arrows (only if screen didn't consume)
+            // Tab cycling: ,=left /=right (only if screen didn't consume)
             if (!consumed && !evt.ctrl) {
-                if (evt.left || evt.character == ',') {
+                if (evt.character == ',') {
                     ui.tabBar().cycleTab(-1);
                     int tab = ui.tabBar().getActiveTab();
                     if (tabScreens[tab]) ui.setScreen(tabScreens[tab]);
                 }
-                if (evt.right || evt.character == '/') {
+                if (evt.character == '/') {
                     ui.tabBar().cycleTab(1);
                     int tab = ui.tabBar().getActiveTab();
                     if (tabScreens[tab]) ui.setScreen(tabScreens[tab]);

@@ -20,7 +20,6 @@ bool Keyboard::begin() {
     }
 
     Serial.println("[KEYBOARD] ESP32-C3 keyboard ready");
-    Serial.println("[KEYBOARD] Alt+I/M/J/L = Up/Down/Left/Right, Backspace = Back");
     return true;
 }
 
@@ -66,12 +65,6 @@ void Keyboard::update() {
 
     if (altFromMod) {
         _event.alt = true;
-        // Map Alt+IJKL/M to arrow keys
-        char lower = tolower(key);
-        if (lower == 'i') { _event.up = true; _hasEvent = true; return; }
-        if (lower == 'm') { _event.down = true; _hasEvent = true; return; }
-        if (lower == 'j') { _event.left = true; _hasEvent = true; return; }
-        if (lower == 'l') { _event.right = true; _hasEvent = true; return; }
     }
 
     // Standard key decoding

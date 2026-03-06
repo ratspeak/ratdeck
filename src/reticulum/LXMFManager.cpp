@@ -15,12 +15,13 @@ bool LXMFManager::begin(ReticulumManager* rns, MessageStore* store) {
 }
 
 void LXMFManager::loop() {
-    while (!_outQueue.empty()) {
-        LXMFMessage& msg = _outQueue.front();
-        if (sendDirect(msg)) {
-            if (_store) { _store->saveMessage(msg); }
-            _outQueue.pop_front();
-        } else { break; }
+    if (_outQueue.empty()) return;
+    LXMFMessage& msg = _outQueue.front();
+    if (sendDirect(msg)) {
+        Serial.printf("[LXMF] Queue drain: status=%s dest=%s\n",
+                      msg.statusStr(), msg.destHash.toHex().substr(0, 8).c_str());
+        if (_store) { _store->saveMessage(msg); }
+        _outQueue.pop_front();
     }
 }
 
@@ -42,8 +43,16 @@ bool LXMFManager::sendMessage(const RNS::Bytes& destHash, const std::string& con
 bool LXMFManager::sendDirect(LXMFMessage& msg) {
     RNS::Identity recipientId = RNS::Identity::recall(msg.destHash);
     if (!recipientId) {
-        msg.status = LXMFStatus::FAILED;
-        return true;
+        msg.retries++;
+        if (msg.retries >= 5) {
+            Serial.printf("[LXMF] recall failed for %s after %d retries — marking FAILED\n",
+                          msg.destHash.toHex().substr(0, 8).c_str(), msg.retries);
+            msg.status = LXMFStatus::FAILED;
+            return true;
+        }
+        Serial.printf("[LXMF] recall failed for %s (retry %d/5) — keeping queued\n",
+                      msg.destHash.toHex().substr(0, 8).c_str(), msg.retries);
+        return false;  // keep in queue, retry next loop
     }
     RNS::Destination outDest(recipientId, RNS::Type::Destination::OUT,
         RNS::Type::Destination::SINGLE, "lxmf", "delivery");
@@ -79,9 +88,14 @@ void LXMFManager::onLinkEstablished(RNS::Link& link) {
 
 void LXMFManager::processIncoming(const uint8_t* data, size_t len, const RNS::Bytes& destHash) {
     LXMFMessage msg;
-    if (!LXMFMessage::unpackFull(data, len, msg)) return;
+    if (!LXMFMessage::unpackFull(data, len, msg)) {
+        Serial.printf("[LXMF] Failed to unpack incoming message (%d bytes)\n", (int)len);
+        return;
+    }
     if (_rns && msg.sourceHash == _rns->destination().hash()) return;
     msg.destHash = destHash;
+    Serial.printf("[LXMF] Message from %s (%d bytes) content_len=%d\n",
+                  msg.sourceHash.toHex().substr(0, 8).c_str(), (int)len, (int)msg.content.size());
     if (_store) { _store->saveMessage(msg); }
     std::string peerHex = msg.sourceHash.toHex();
     _unread[peerHex]++;

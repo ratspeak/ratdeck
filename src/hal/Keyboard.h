@@ -22,7 +22,7 @@ struct KeyEvent {
     bool del;
     bool tab;
     bool space;
-    // Directional arrows (from Alt+IJKL/M or trackball)
+    // Directional arrows (from trackball)
     bool up;
     bool down;
     bool left;

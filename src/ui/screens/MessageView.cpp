@@ -2,6 +2,7 @@
 #include "ui/Theme.h"
 #include "hal/Display.h"
 #include "reticulum/LXMFManager.h"
+#include "reticulum/AnnounceManager.h"
 #include <Arduino.h>
 
 void MessageView::onEnter() {
@@ -27,11 +28,17 @@ void MessageView::update() {
 void MessageView::draw(LGFX_TDeck& gfx) {
     gfx.setTextSize(1);
 
-    // Header
+    // Header — show node name if known
     gfx.setTextColor(Theme::ACCENT, Theme::BG);
     gfx.setCursor(4, Theme::CONTENT_Y + 2);
-    char header[32];
-    snprintf(header, sizeof(header), "< %s", _peerHex.substr(0, 12).c_str());
+    std::string headerName;
+    if (_am) {
+        const DiscoveredNode* node = _am->findNodeByHex(_peerHex);
+        if (node && !node->name.empty()) headerName = node->name;
+    }
+    if (headerName.empty()) headerName = _peerHex.substr(0, 12);
+    char header[48];
+    snprintf(header, sizeof(header), "< %s", headerName.c_str());
     gfx.print(header);
 
     // Divider under header
@@ -91,9 +98,15 @@ void MessageView::draw(LGFX_TDeck& gfx) {
             gfx.setTextColor(Theme::ACCENT, Theme::BG);
             gfx.setCursor(4, y);
         } else {
+            // Status indicator: * = sent, ! = failed, ~ = queued/sending
+            const char* indicator = "~";
+            if (msg.status == LXMFStatus::SENT || msg.status == LXMFStatus::DELIVERED) indicator = "*";
+            else if (msg.status == LXMFStatus::FAILED) indicator = "!";
+
             gfx.setTextColor(Theme::PRIMARY, Theme::BG);
-            // Right-align outgoing
-            int tw = std::min((int)msg.content.length(), 40) * 6;
+            // Right-align outgoing + status
+            int contentLen = std::min((int)msg.content.length(), 38);
+            int tw = (contentLen + 2) * 6;  // +2 for space + indicator
             gfx.setCursor(Theme::SCREEN_W - tw - 4, y);
         }
 
@@ -103,6 +116,20 @@ void MessageView::draw(LGFX_TDeck& gfx) {
             gfx.print("...");
         } else {
             gfx.print(msg.content.c_str());
+        }
+
+        // Show status indicator for outgoing messages
+        if (!msg.incoming) {
+            const char* ind = "~";
+            uint32_t indColor = Theme::MUTED;
+            if (msg.status == LXMFStatus::SENT || msg.status == LXMFStatus::DELIVERED) {
+                ind = "*"; indColor = Theme::ACCENT;
+            } else if (msg.status == LXMFStatus::FAILED) {
+                ind = "!"; indColor = TFT_RED;
+            }
+            gfx.setTextColor(indColor, Theme::BG);
+            gfx.print(" ");
+            gfx.print(ind);
         }
         y += lineH;
     }

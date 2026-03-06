@@ -55,11 +55,17 @@ void AnnounceManager::received_announce(
         if (rawName.empty()) rawName = app_data.toString();
         name = sanitizeName(rawName);
     }
+    // Filter out own announces
+    if (_localDestHash.size() > 0 && destination_hash == _localDestHash) return;
+
     Serial.printf("[ANNOUNCE] From: %s name=\"%s\"\n", destination_hash.toHex().c_str(), name.c_str());
+
+    std::string idHex = announced_identity.hexhash();
 
     for (auto& node : _nodes) {
         if (node.hash == destination_hash) {
             if (!name.empty()) node.name = name;
+            if (!idHex.empty()) node.identityHex = idHex;
             node.lastSeen = millis();
             node.hops = RNS::Transport::hops_to(destination_hash);
             if (node.saved) saveContact(node);
@@ -86,6 +92,7 @@ void AnnounceManager::received_announce(
     DiscoveredNode node;
     node.hash = destination_hash;
     node.name = name.empty() ? destination_hash.toHex().substr(0, 12) : name;
+    node.identityHex = idHex;
     node.lastSeen = millis();
     node.hops = RNS::Transport::hops_to(destination_hash);
     _nodes.push_back(node);
@@ -93,6 +100,11 @@ void AnnounceManager::received_announce(
 
 const DiscoveredNode* AnnounceManager::findNode(const RNS::Bytes& hash) const {
     for (const auto& n : _nodes) { if (n.hash == hash) return &n; }
+    return nullptr;
+}
+
+const DiscoveredNode* AnnounceManager::findNodeByHex(const std::string& hexHash) const {
+    for (const auto& n : _nodes) { if (n.hash.toHex() == hexHash) return &n; }
     return nullptr;
 }
 
