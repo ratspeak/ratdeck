@@ -50,14 +50,18 @@ void TCPClientInterface::loop() {
         return;
     }
 
-    // Read incoming frames
-    unsigned long rxStart = millis();
-    int len = readFrame(_rxBuffer, sizeof(_rxBuffer));
-    if (len > 0) {
-        RNS::Bytes data(_rxBuffer, len);
-        Serial.printf("[TCP] RX %d bytes from %s:%d (%lums)\n",
-                      len, _host.c_str(), _port, millis() - rxStart);
-        InterfaceImpl::handle_incoming(data);
+    // Drain multiple incoming frames per loop (up to 10)
+    for (int i = 0; i < 10 && _client.available(); i++) {
+        unsigned long rxStart = millis();
+        int len = readFrame(_rxBuffer, sizeof(_rxBuffer));
+        if (len > 0) {
+            RNS::Bytes data(_rxBuffer, len);
+            Serial.printf("[TCP] RX %d bytes from %s:%d (%lums)\n",
+                          len, _host.c_str(), _port, millis() - rxStart);
+            InterfaceImpl::handle_incoming(data);
+        } else {
+            break;  // Incomplete frame, wait for more data
+        }
     }
 }
 

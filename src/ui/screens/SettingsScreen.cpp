@@ -10,6 +10,7 @@
 #include "hal/Power.h"
 #include "transport/WiFiInterface.h"
 #include "reticulum/ReticulumManager.h"
+#include "reticulum/IdentityManager.h"
 #include <Arduino.h>
 #include <esp_system.h>
 #include <nvs_flash.h>
@@ -102,6 +103,67 @@ void SettingsScreen::buildItems() {
         nameItem.textSetter = [&s](const String& v) { s.displayName = v; };
         nameItem.maxTextLen = 16;
         _items.push_back(nameItem);
+        idx++;
+    }
+    // Identity switcher (if IdentityManager available)
+    if (_idMgr && _idMgr->count() > 0) {
+        SettingItem idSwitch;
+        idSwitch.label = "Active Identity";
+        idSwitch.type = SettingType::ENUM_CHOICE;
+        idSwitch.getter = [this]() { return _idMgr->activeIndex(); };
+        idSwitch.setter = [this](int v) {
+            // Identity switch requires reboot
+            if (v == _idMgr->activeIndex()) return;
+            RNS::Identity newId;
+            if (_idMgr->switchTo(v, newId)) {
+                if (_ui) _ui->statusBar().showToast("Identity switched! Rebooting...", 2000);
+                applyAndSave();
+                delay(1000);
+                ESP.restart();
+            } else {
+                if (_ui) _ui->statusBar().showToast("Switch failed!", 1500);
+            }
+        };
+        idSwitch.formatter = nullptr;
+        idSwitch.minVal = 0;
+        idSwitch.maxVal = _idMgr->count() - 1;
+        idSwitch.step = 1;
+        // Build labels from identity slots
+        for (int i = 0; i < _idMgr->count(); i++) {
+            auto& slot = _idMgr->identities()[i];
+            static char labelBufs[8][32];
+            if (!slot.displayName.isEmpty()) {
+                snprintf(labelBufs[i], sizeof(labelBufs[i]), "%s", slot.displayName.c_str());
+            } else {
+                snprintf(labelBufs[i], sizeof(labelBufs[i]), "%.12s", slot.hash.c_str());
+            }
+            idSwitch.enumLabels.push_back(labelBufs[i]);
+        }
+        _items.push_back(idSwitch);
+        idx++;
+    }
+    {
+        SettingItem newId;
+        newId.label = "New Identity";
+        newId.type = SettingType::ACTION;
+        newId.formatter = [](int) { return String("[Enter]"); };
+        newId.action = [this, &s]() {
+            if (!_idMgr) {
+                if (_ui) _ui->statusBar().showToast("Not available", 1200);
+                return;
+            }
+            if (_idMgr->count() >= 8) {
+                if (_ui) _ui->statusBar().showToast("Max 8 identities!", 1200);
+                return;
+            }
+            int idx = _idMgr->createIdentity(s.displayName);
+            if (idx >= 0) {
+                if (_ui) _ui->statusBar().showToast("Identity created!", 1200);
+                buildItems();  // Rebuild to show new identity in switcher
+                markDirty();
+            }
+        };
+        _items.push_back(newId);
         idx++;
     }
     _categories.push_back({"Device", devStart, idx - devStart,
@@ -307,6 +369,11 @@ void SettingsScreen::buildItems() {
         },
         [](int v) { return String(v); },
         1, 65535, 1});
+    idx++;
+    _items.push_back({"Transport Node", SettingType::TOGGLE,
+        [&s]() { return s.transportEnabled ? 1 : 0; },
+        [&s](int v) { s.transportEnabled = (v != 0); },
+        [](int v) { return v ? String("ON") : String("OFF"); }});
     idx++;
     _items.push_back({"BLE", SettingType::TOGGLE,
         [&s]() { return s.bleEnabled ? 1 : 0; },

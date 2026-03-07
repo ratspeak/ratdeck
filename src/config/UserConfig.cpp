@@ -50,6 +50,7 @@ bool UserConfig::parseJson(const String& json) {
     _settings.denseFontMode    = doc["dense_font"] | false;
     _settings.trackballSpeed   = doc["trackball_speed"] | 3;
     _settings.touchSensitivity = doc["touch_sens"] | 3;
+    _settings.transportEnabled = doc["transport"] | false;
     _settings.bleEnabled       = doc["ble_enabled"] | true;
 
     _settings.audioEnabled = doc["audio_on"]  | true;
@@ -91,6 +92,7 @@ String UserConfig::serializeToJson() const {
     doc["dense_font"] = _settings.denseFontMode;
     doc["trackball_speed"] = _settings.trackballSpeed;
     doc["touch_sens"] = _settings.touchSensitivity;
+    doc["transport"] = _settings.transportEnabled;
     doc["ble_enabled"] = _settings.bleEnabled;
 
     doc["audio_on"]  = _settings.audioEnabled;

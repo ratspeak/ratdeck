@@ -68,13 +68,19 @@ bool ReticulumManager::begin(SX1262* radio, FlashStore* flash) {
     }
 
     _reticulum = RNS::Reticulum();
-    RNS::Reticulum::transport_enabled(true);
+    RNS::Reticulum::transport_enabled(_transportEnabled);
     RNS::Reticulum::probe_destination_enabled(true);
-    // PSRAM allows larger tables than Ratputer
-    RNS::Transport::path_table_maxsize(64);
-    RNS::Transport::announce_table_maxsize(64);
+    if (_transportEnabled) {
+        // Transport node: larger tables for routing
+        RNS::Transport::path_table_maxsize(64);
+        RNS::Transport::announce_table_maxsize(64);
+    } else {
+        // Endpoint: smaller tables, no rebroadcasting
+        RNS::Transport::path_table_maxsize(32);
+        RNS::Transport::announce_table_maxsize(32);
+    }
     _reticulum.start();
-    Serial.println("[RNS] Reticulum started (Transport Node)");
+    Serial.printf("[RNS] Reticulum started (%s)\n", _transportEnabled ? "Transport Node" : "Endpoint");
 
     if (!loadOrCreateIdentity()) {
         Serial.println("[RNS] ERROR: Identity creation failed!");
@@ -92,7 +98,7 @@ bool ReticulumManager::begin(SX1262* radio, FlashStore* flash) {
     _destination.accepts_links(true);
 
     _transportActive = true;
-    Serial.println("[RNS] Transport node active");
+    Serial.printf("[RNS] %s active\n", _transportEnabled ? "Transport node" : "Endpoint");
     return true;
 }
 

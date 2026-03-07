@@ -15,6 +15,7 @@ class Power;
 class WiFiInterface;
 class TCPClientInterface;
 class ReticulumManager;
+class IdentityManager;
 
 enum class SettingType : uint8_t {
     READONLY,
@@ -69,6 +70,7 @@ public:
     void setWiFi(WiFiInterface* wifi) { _wifi = wifi; }
     void setTCPClients(std::vector<TCPClientInterface*>* tcp) { _tcp = tcp; }
     void setRNS(ReticulumManager* rns) { _rns = rns; }
+    void setIdentityManager(IdentityManager* idm) { _idMgr = idm; }
     void setUIManager(UIManager* ui) { _ui = ui; }
     void setIdentityHash(const String& hash) { _identityHash = hash; }
     void setSaveCallback(std::function<bool()> cb) { _saveCallback = cb; }
@@ -104,6 +106,7 @@ private:
     WiFiInterface* _wifi = nullptr;
     std::vector<TCPClientInterface*>* _tcp = nullptr;
     ReticulumManager* _rns = nullptr;
+    IdentityManager* _idMgr = nullptr;
     UIManager* _ui = nullptr;
     String _identityHash;
 

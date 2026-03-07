@@ -33,6 +33,7 @@
 #include "reticulum/ReticulumManager.h"
 #include "reticulum/AnnounceManager.h"
 #include "reticulum/LXMFManager.h"
+#include "reticulum/IdentityManager.h"
 #include "transport/LoRaInterface.h"
 #include "transport/WiFiInterface.h"
 #include "transport/TCPClientInterface.h"
@@ -40,6 +41,7 @@
 #include "transport/BLESideband.h"
 #include "config/UserConfig.h"
 #include "audio/AudioNotify.h"
+#include <ArduinoJson.h>
 #include <Preferences.h>
 #include <list>
 #include <esp_system.h>
@@ -81,6 +83,7 @@ BLESideband bleSideband;
 UserConfig userConfig;
 Power powerMgr;
 AudioNotify audio;
+IdentityManager identityMgr;
 
 // --- Screens ---
 BootScreen bootScreen;
@@ -401,6 +404,20 @@ void setup() {
     bootScreen.setProgress(0.65f, "Starting Reticulum...");
     bootRender();
     rns.setSDStore(&sdStore);
+    // Transport mode is loaded later from config; default is endpoint (no rebroadcast)
+    // We load a quick peek at the config to get the transport setting before RNS init
+    {
+        String json = sdStore.isReady() ? sdStore.readString(SD_PATH_USER_CONFIG) : "";
+        if (json.isEmpty()) json = flash.readString(PATH_USER_CONFIG);
+        if (!json.isEmpty()) {
+            JsonDocument peek;
+            if (!deserializeJson(peek, json)) {
+                bool transport = peek["transport"] | false;
+                rns.setTransportEnabled(transport);
+                Serial.printf("[BOOT] Transport mode: %s\n", transport ? "ON" : "OFF");
+            }
+        }
+    }
     if (rns.begin(&radio, &flash)) {
         Serial.printf("[BOOT] Identity: %s\n", rns.identityHash().c_str());
         bootScreen.setProgress(0.72f, "Reticulum active");
@@ -409,6 +426,9 @@ void setup() {
         bootScreen.setProgress(0.72f, "RNS: FAILED");
     }
     bootRender();
+
+    // Step 15.5: Identity manager
+    identityMgr.begin(&flash, &sdStore);
 
     // Step 16: Message store
     bootScreen.setProgress(0.72f, "Starting messaging...");
@@ -583,6 +603,7 @@ void setup() {
     settingsScreen.setWiFi(wifiImpl);
     settingsScreen.setTCPClients(&tcpClients);
     settingsScreen.setRNS(&rns);
+    settingsScreen.setIdentityManager(&identityMgr);
     settingsScreen.setUIManager(&ui);
     settingsScreen.setIdentityHash(rns.identityHash());
     settingsScreen.setSaveCallback([]() -> bool {

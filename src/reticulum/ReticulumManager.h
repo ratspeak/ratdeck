@@ -39,6 +39,7 @@ public:
 
     bool begin(SX1262* radio, FlashStore* flash);
     void setSDStore(SDStore* sd) { _sd = sd; }
+    void setTransportEnabled(bool enabled) { _transportEnabled = enabled; }
     void loop();
     void persistData();
 
@@ -66,6 +67,7 @@ private:
     LoRaInterface* _loraImpl = nullptr;
     FlashStore* _flash = nullptr;
     SDStore* _sd = nullptr;
+    bool _transportEnabled = false;  // Default: endpoint mode (no rebroadcast)
     bool _transportActive = false;
     unsigned long _lastPersist = 0;
     unsigned long _lastAnnounceTime = 0;

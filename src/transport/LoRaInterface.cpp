@@ -73,16 +73,15 @@ void LoRaInterface::send_outgoing(const RNS::Bytes& data) {
 void LoRaInterface::loop() {
     if (!_online || !_radio) return;
 
-    // Periodic RX debug: dump RSSI + IRQ flags + chip status every 5 seconds
+    // Periodic RX debug: dump RSSI + chip status every 30 seconds
     static unsigned long lastRxDebug = 0;
-    if (millis() - lastRxDebug > 5000) {
+    if (millis() - lastRxDebug > 30000) {
         lastRxDebug = millis();
         int rssi = _radio->currentRssi();
-        uint16_t irq = _radio->getIrqFlags();
         uint8_t status = _radio->getStatus();
         uint8_t chipMode = (status >> 4) & 0x07;
-        Serial.printf("[LORA_IF] RX monitor: RSSI=%d dBm, IRQ=0x%04X, status=0x%02X(mode=%d), devErr=0x%04X\n",
-            rssi, irq, status, chipMode, _radio->getDeviceErrors());
+        Serial.printf("[LORA_IF] RX: RSSI=%d dBm, status=0x%02X(mode=%d)\n",
+            rssi, status, chipMode);
     }
 
     int packetSize = _radio->parsePacket();
