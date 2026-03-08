@@ -142,17 +142,11 @@ void LvNodesScreen::rebuildList() {
         lv_obj_set_style_radius(row, 0, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        // Name + hash
-        std::string displayHash;
-        if (!node.identityHex.empty() && node.identityHex.size() >= 12) {
-            displayHash = node.identityHex.substr(0, 4) + ":" +
-                          node.identityHex.substr(4, 4) + ":" +
-                          node.identityHex.substr(8, 4);
-        } else {
-            displayHash = node.hash.toHex().substr(0, 8);
-        }
+        // Name (truncated to 15) + destination hash (12 chars)
+        std::string truncName = node.name.substr(0, 15);
+        std::string displayHash = node.hash.toHex().substr(0, 12);
         char buf[64];
-        snprintf(buf, sizeof(buf), "%s [%s]", node.name.c_str(), displayHash.c_str());
+        snprintf(buf, sizeof(buf), "%s [%s]", truncName.c_str(), displayHash.c_str());
 
         lv_obj_t* lbl = lv_label_create(row);
         lv_obj_set_style_text_font(lbl, font, 0);
@@ -199,6 +193,11 @@ void LvNodesScreen::rebuildList() {
     while (_selectedIdx < _totalRows && _rowToNodeIdx[_selectedIdx] == -1) _selectedIdx++;
     if (_selectedIdx >= _totalRows) _selectedIdx = _totalRows - 1;
 
+    // Apply highlight to corrected selection (rows were built before skip-headers loop)
+    if (_selectedIdx >= 0 && _selectedIdx < (int)_rows.size()) {
+        lv_obj_set_style_bg_color(_rows[_selectedIdx], lv_color_hex(Theme::SELECTION_BG), 0);
+    }
+
     scrollToSelected();
 }
 
@@ -215,9 +214,17 @@ bool LvNodesScreen::handleLongPress() {
     int nodeIdx = _rowToNodeIdx[_selectedIdx];
     if (nodeIdx < 0 || nodeIdx >= (int)_am->nodes().size()) return false;
     const auto& node = _am->nodes()[nodeIdx];
-    if (!node.saved) return false;  // Only contacts can be deleted
-    _confirmDelete = true;
-    if (_ui) _ui->lvStatusBar().showToast("Delete contact? Enter=Yes Esc=No", 5000);
+    if (node.saved) {
+        _confirmDelete = true;
+        if (_ui) _ui->lvStatusBar().showToast("Remove friend? Enter=Yes Esc=No", 5000);
+    } else {
+        // Add as friend
+        auto& mutableNode = const_cast<DiscoveredNode&>(node);
+        mutableNode.saved = true;
+        _am->saveContacts();
+        if (_ui) _ui->lvStatusBar().showToast("Added to friends!", 1200);
+        rebuildList();
+    }
     return true;
 }
 

@@ -74,18 +74,20 @@ std::vector<uint8_t> LXMFMessage::packContent(double timestamp, const std::strin
     buf.reserve(32 + content.size() + title.size());
     buf.push_back(0x94);
     mpPackFloat64(buf, timestamp);
+    mpPackString(buf, title);    // LXMF spec: [ts, title, content, fields]
     mpPackString(buf, content);
-    mpPackString(buf, title);
     buf.push_back(0x80);
     return buf;
 }
 
 std::vector<uint8_t> LXMFMessage::packFull(const RNS::Identity& signingIdentity) const {
     std::vector<uint8_t> packed = packContent(timestamp, content, title);
-    if (sourceHash.size() < 16) return {};
+    if (sourceHash.size() < 16 || destHash.size() < 16) return {};
 
+    // Sign: dest_hash || source_hash || packed_content (LXMF spec)
     std::vector<uint8_t> signable;
-    signable.reserve(16 + packed.size());
+    signable.reserve(32 + packed.size());
+    signable.insert(signable.end(), destHash.data(), destHash.data() + 16);
     signable.insert(signable.end(), sourceHash.data(), sourceHash.data() + 16);
     signable.insert(signable.end(), packed.begin(), packed.end());
 
@@ -93,21 +95,25 @@ std::vector<uint8_t> LXMFMessage::packFull(const RNS::Identity& signingIdentity)
     RNS::Bytes sig = signingIdentity.sign(signableBytes);
     if (sig.size() < 64) return {};
 
+    // Wire (opportunistic SINGLE): [src_hash:16][signature:64][packed_content]
+    // dest_hash is implicit in the Reticulum SINGLE packet destination
     std::vector<uint8_t> payload;
-    payload.reserve(16 + packed.size() + 64);
+    payload.reserve(16 + 64 + packed.size());
     payload.insert(payload.end(), sourceHash.data(), sourceHash.data() + 16);
-    payload.insert(payload.end(), packed.begin(), packed.end());
     payload.insert(payload.end(), sig.data(), sig.data() + 64);
+    payload.insert(payload.end(), packed.begin(), packed.end());
     return payload;
 }
 
 bool LXMFMessage::unpackFull(const uint8_t* data, size_t len, LXMFMessage& msg) {
-    if (len < 93) return false;
+    // Wire (opportunistic SINGLE): [src_hash:16][signature:64][packed_content]
+    // dest_hash comes from the Reticulum packet (set by caller)
+    if (len < 81) return false;  // 16+64+1 minimum
     msg.sourceHash = RNS::Bytes(data, 16);
-    msg.signature = RNS::Bytes(data + len - 64, 64);
+    msg.signature = RNS::Bytes(data + 16, 64);
 
-    const uint8_t* content = data + 16;
-    size_t contentLen = len - 16 - 64;
+    const uint8_t* content = data + 80;
+    size_t contentLen = len - 80;
     size_t pos = 0;
 
     if (pos >= contentLen) return false;
@@ -117,9 +123,10 @@ bool LXMFMessage::unpackFull(const uint8_t* data, size_t len, LXMFMessage& msg) 
     if (arrLen < 3) return false;
     pos++;
 
+    // LXMF spec: [timestamp, title, content, fields]
     if (!mpReadFloat64(content, contentLen, pos, msg.timestamp)) return false;
-    if (!mpReadString(content, contentLen, pos, msg.content)) return false;
     if (!mpReadString(content, contentLen, pos, msg.title)) return false;
+    if (!mpReadString(content, contentLen, pos, msg.content)) return false;
     if (arrLen >= 4 && pos < contentLen) { mpSkipValue(content, contentLen, pos); }
 
     RNS::Bytes fullPayload(data, len);

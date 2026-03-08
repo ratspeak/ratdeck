@@ -37,6 +37,7 @@ public:
     void setIdentityManager(IdentityManager* idm) { _idMgr = idm; }
     void setUIManager(UIManager* ui) { _ui = ui; }
     void setIdentityHash(const String& hash) { _identityHash = hash; }
+    void setDestinationHash(const String& hash) { _destinationHash = hash; }
     void setSaveCallback(std::function<bool()> cb) { _saveCallback = cb; }
     void setTCPChangeCallback(std::function<void()> cb) { _tcpChangeCb = cb; }
 
@@ -75,6 +76,7 @@ private:
     IdentityManager* _idMgr = nullptr;
     UIManager* _ui = nullptr;
     String _identityHash;
+    String _destinationHash;
     std::function<bool()> _saveCallback;
     std::function<void()> _tcpChangeCb;
 

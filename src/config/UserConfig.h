@@ -26,7 +26,7 @@ struct UserSettings {
     long loraPreamble = LORA_DEFAULT_PREAMBLE;
 
     // WiFi
-    RatWiFiMode wifiMode = RAT_WIFI_AP;
+    RatWiFiMode wifiMode = RAT_WIFI_STA;
     String wifiAPSSID;
     String wifiAPPassword = WIFI_AP_PASSWORD;
     String wifiSTASSID;

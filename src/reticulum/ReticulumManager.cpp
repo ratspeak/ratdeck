@@ -64,6 +64,24 @@ bool ReticulumManager::begin(SX1262* radio, FlashStore* flash) {
     RNS::Utilities::OS::register_filesystem(fs);
     Serial.println("[RNS] Filesystem registered");
 
+    // Restore routing tables from SD if missing on flash
+    if (_sd && _sd->isReady()) {
+        static const char* files[] = {"/destination_table", "/packet_hashlist"};
+        for (const char* name : files) {
+            if (!LittleFS.exists(name)) {
+                char sdPath[64];
+                snprintf(sdPath, sizeof(sdPath), "/ratputer/transport%s", name);
+                uint8_t buf[4096];
+                size_t len = 0;
+                if (_sd->readFile(sdPath, buf, sizeof(buf), len) && len > 0) {
+                    File f = LittleFS.open(name, "w");
+                    if (f) { f.write(buf, len); f.close(); }
+                    Serial.printf("[RNS] Restored %s from SD (%d bytes)\n", name, (int)len);
+                }
+            }
+        }
+    }
+
     _loraImpl = new LoRaInterface(radio, "LoRa.915");
     _loraIface = _loraImpl;
     _loraIface.mode(RNS::Type::Interface::MODE_GATEWAY);
@@ -197,7 +215,29 @@ void ReticulumManager::loop() {
     }
 }
 
-void ReticulumManager::persistData() { RNS::Transport::persist_data(); }
+void ReticulumManager::persistData() {
+    RNS::Transport::persist_data();
+    // Backup routing tables to SD
+    if (_sd && _sd->isReady()) {
+        static const char* files[] = {"/destination_table", "/packet_hashlist"};
+        for (const char* name : files) {
+            File f = LittleFS.open(name, "r");
+            if (f && f.size() > 0) {
+                size_t sz = f.size();
+                uint8_t* buf = (uint8_t*)malloc(sz);
+                if (buf) {
+                    f.readBytes((char*)buf, sz);
+                    char sdPath[64];
+                    snprintf(sdPath, sizeof(sdPath), "/ratputer/transport%s", name);
+                    _sd->ensureDir("/ratputer/transport");
+                    _sd->writeSimple(sdPath, buf, sz);
+                    free(buf);
+                }
+            }
+            if (f) f.close();
+        }
+    }
+}
 
 String ReticulumManager::identityHash() const {
     if (!_identity) return "unknown";
@@ -208,23 +248,32 @@ String ReticulumManager::identityHash() const {
     return String(hex.c_str());
 }
 
+String ReticulumManager::destinationHashHex() const {
+    if (!_destination) return "unknown";
+    return String(_destination.hash().toHex().c_str());
+}
+
 size_t ReticulumManager::pathCount() const { return _reticulum.get_path_table().size(); }
 size_t ReticulumManager::linkCount() const { return _reticulum.get_link_count(); }
 
 void ReticulumManager::announce(const RNS::Bytes& appData) {
     if (!_transportActive) return;
-    Serial.printf("[TX-DBG] dest_hash:     %s\n", _destination.hash().toHex().c_str());
-    Serial.printf("[TX-DBG] identity_hash: %s\n", _identity.hexhash().c_str());
-    Serial.printf("[TX-DBG] public_key:    %s\n", _identity.get_public_key().toHex().c_str());
-    // Compute name_hash the same way Destination does: SHA256("lxmf.delivery").left(10)
-    RNS::Bytes nh = RNS::Identity::full_hash(RNS::Bytes("lxmf.delivery")).left(10);
-    Serial.printf("[TX-DBG] name_hash:     %s\n", nh.toHex().c_str());
-    // Compute hash_material = name_hash + identity_hash
-    RNS::Bytes hm = nh + _identity.hash();
-    Serial.printf("[TX-DBG] hash_material: %s\n", hm.toHex().c_str());
-    RNS::Bytes eh = RNS::Identity::full_hash(hm).left(16);
-    Serial.printf("[TX-DBG] recomputed:    %s\n", eh.toHex().c_str());
+    Serial.println("[ANNOUNCE-TX] === Starting ===");
+    Serial.printf("[ANNOUNCE-TX] dest_hash:     %s\n", _destination.hash().toHex().c_str());
+    Serial.printf("[ANNOUNCE-TX] identity_hash: %s\n", _identity.hexhash().c_str());
+    Serial.printf("[ANNOUNCE-TX] app_data size: %d bytes\n", (int)appData.size());
+    if (appData.size() > 0) {
+        Serial.printf("[ANNOUNCE-TX] app_data hex:  %s\n", appData.toHex().c_str());
+    }
+    // Log registered interfaces
+    auto& ifaces = RNS::Transport::get_interfaces();
+    Serial.printf("[ANNOUNCE-TX] registered interfaces: %d\n", (int)ifaces.size());
+    for (const auto& [hash, iface] : ifaces) {
+        Serial.printf("[ANNOUNCE-TX]   iface: %s OUT=%d online=%d mode=%d\n",
+            iface.toString().c_str(), iface.OUT(), iface.online(), (int)iface.mode());
+    }
+    unsigned long startMs = millis();
     _destination.announce(appData);
     _lastAnnounceTime = millis();
-    Serial.println("[RNS] Announce sent");
+    Serial.printf("[ANNOUNCE-TX] === Complete === (%lu ms)\n", millis() - startMs);
 }

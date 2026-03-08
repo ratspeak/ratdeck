@@ -20,6 +20,7 @@ bool MessageStore::begin(FlashStore* flash, SDStore* sd) {
         migrateFlashToSD();
     }
 
+    migrateTruncatedDirs();
     refreshConversations();
     Serial.printf("[MSGSTORE] %d conversations found\n", (int)_conversations.size());
     return true;
@@ -62,6 +63,89 @@ void MessageStore::migrateFlashToSD() {
 
     if (migrated > 0) {
         Serial.printf("[MSGSTORE] Migrated %d messages from flash to SD\n", migrated);
+    }
+}
+
+// Migrate old 16-char truncated directories to full 32-char hex names
+void MessageStore::migrateTruncatedDirs() {
+    auto migrateInDir = [&](auto openFn, auto renameFn, auto readStringFn, const char* basePath) {
+        File dir = openFn(basePath);
+        if (!dir || !dir.isDirectory()) return;
+
+        // Collect dirs that need renaming (can't rename while iterating)
+        std::vector<std::pair<String, String>> renames; // old path -> new path
+
+        File entry = dir.openNextFile();
+        while (entry) {
+            if (entry.isDirectory()) {
+                std::string dirName = entry.name();
+                // Old dirs are exactly 16 hex chars; new ones are 32
+                if (dirName.length() == 16) {
+                    // Read first JSON file inside to get the full hash
+                    String oldDir = String(basePath) + dirName.c_str();
+                    File inner = openFn(oldDir.c_str());
+                    if (inner && inner.isDirectory()) {
+                        File jsonFile = inner.openNextFile();
+                        std::string fullHash;
+                        while (jsonFile) {
+                            if (!jsonFile.isDirectory() && isJsonFile(jsonFile.name())) {
+                                String jsonPath = oldDir + "/" + jsonFile.name();
+                                String json = readStringFn(jsonPath.c_str());
+                                if (json.length() > 0) {
+                                    JsonDocument doc;
+                                    if (!deserializeJson(doc, json)) {
+                                        // Use src for incoming, dst for outgoing
+                                        bool incoming = doc["incoming"] | false;
+                                        std::string hash = incoming ?
+                                            (doc["src"] | "") : (doc["dst"] | "");
+                                        if (hash.length() == 32) {
+                                            fullHash = hash;
+                                        }
+                                    }
+                                }
+                                jsonFile.close();
+                                break;
+                            }
+                            jsonFile.close();
+                            jsonFile = inner.openNextFile();
+                        }
+                        inner.close();
+
+                        if (!fullHash.empty() && fullHash.substr(0, 16) == dirName) {
+                            String newDir = String(basePath) + fullHash.c_str();
+                            renames.push_back({oldDir, newDir});
+                        }
+                    }
+                }
+            }
+            entry.close();
+            entry = dir.openNextFile();
+        }
+        dir.close();
+
+        for (auto& [oldPath, newPath] : renames) {
+            if (renameFn(oldPath.c_str(), newPath.c_str())) {
+                Serial.printf("[MSGSTORE] Migrated %s -> %s\n", oldPath.c_str(), newPath.c_str());
+            }
+        }
+    };
+
+    // Migrate flash directories
+    migrateInDir(
+        [](const char* p) { return LittleFS.open(p); },
+        [](const char* a, const char* b) { return LittleFS.rename(a, b); },
+        [this](const char* p) { return _flash ? _flash->readString(p) : String(""); },
+        PATH_MESSAGES
+    );
+
+    // Migrate SD directories
+    if (_sd && _sd->isReady()) {
+        migrateInDir(
+            [this](const char* p) { return _sd->openDir(p); },
+            [](const char* a, const char* b) { return SD.rename(a, b); },
+            [this](const char* p) { return _sd->readString(p); },
+            SD_PATH_MESSAGES
+        );
     }
 }
 
@@ -328,11 +412,11 @@ void MessageStore::markConversationRead(const std::string& peerHex) {
 }
 
 String MessageStore::conversationDir(const std::string& peerHex) const {
-    return String(PATH_MESSAGES) + peerHex.substr(0, 16).c_str();
+    return String(PATH_MESSAGES) + peerHex.c_str();
 }
 
 String MessageStore::sdConversationDir(const std::string& peerHex) const {
-    return String(SD_PATH_MESSAGES) + peerHex.substr(0, 16).c_str();
+    return String(SD_PATH_MESSAGES) + peerHex.c_str();
 }
 
 void MessageStore::enforceFlashLimit(const std::string& peerHex) {

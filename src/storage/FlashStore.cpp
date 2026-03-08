@@ -33,6 +33,15 @@ void FlashStore::end() {
 bool FlashStore::ensureDir(const char* path) {
     if (!_ready) return false;
     if (LittleFS.exists(path)) return true;
+    // Create parent directories recursively
+    String pathStr = String(path);
+    int lastSlash = pathStr.lastIndexOf('/');
+    if (lastSlash > 0) {
+        String parent = pathStr.substring(0, lastSlash);
+        if (!LittleFS.exists(parent.c_str())) {
+            ensureDir(parent.c_str());
+        }
+    }
     return LittleFS.mkdir(path);
 }
 
@@ -80,6 +89,9 @@ bool FlashStore::writeAtomic(const char* path, const uint8_t* data, size_t len) 
         }
         return false;
     }
+
+    // Clean up backup file after successful write
+    LittleFS.remove(bakPath.c_str());
 
     return true;
 }

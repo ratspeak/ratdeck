@@ -38,6 +38,14 @@ public:
     // Save display name for identity at index
     void setDisplayName(int index, const String& name);
 
+    // Get the display name for identity at index
+    String getDisplayName(int index) const;
+
+    // Sync active identity's display name from/to config
+    // Call on boot: loads active slot's name into outName
+    // Returns true if outName was set
+    bool syncNameFromActive(String& outName) const;
+
     // Refresh slot list from storage
     void refresh();
 

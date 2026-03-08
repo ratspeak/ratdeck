@@ -1,6 +1,7 @@
 #include "LvMessageView.h"
 #include "ui/Theme.h"
 #include "ui/LvTheme.h"
+#include "ui/LvTabBar.h"
 #include "reticulum/LXMFManager.h"
 #include "reticulum/AnnounceManager.h"
 #include <Arduino.h>
@@ -106,7 +107,16 @@ void LvMessageView::destroyUI() {
 }
 
 void LvMessageView::onEnter() {
-    if (_lxmf) _lxmf->markRead(_peerHex);
+    if (_lxmf) {
+        _lxmf->markRead(_peerHex);
+        // Update unread badge on Messages tab
+        if (_ui) _ui->lvTabBar().setUnreadCount(LvTabBar::TAB_MSGS, _lxmf->unreadCount());
+        // Register status callback for live updates
+        std::string peer = _peerHex;
+        _lxmf->setStatusCallback([this, peer](const std::string& peerHex, double, LXMFStatus) {
+            if (peerHex == peer) _lastRefreshMs = 0; // Force rebuild on next refreshUI
+        });
+    }
     _lastMsgCount = -1;
     _lastRefreshMs = 0;
     _inputText.clear();
@@ -123,6 +133,7 @@ void LvMessageView::onEnter() {
 }
 
 void LvMessageView::onExit() {
+    if (_lxmf) _lxmf->setStatusCallback(nullptr);
     _inputText.clear();
     _cachedMsgs.clear();
 }
@@ -131,10 +142,17 @@ void LvMessageView::refreshUI() {
     if (!_lxmf) return;
     unsigned long now = millis();
     if (now - _lastRefreshMs >= REFRESH_INTERVAL_MS) {
-        int oldCount = (int)_cachedMsgs.size();
-        _cachedMsgs = _lxmf->getMessages(_peerHex);
+        auto newMsgs = _lxmf->getMessages(_peerHex);
         _lastRefreshMs = now;
-        if ((int)_cachedMsgs.size() != oldCount) {
+        // Rebuild if count changed or any status changed
+        bool changed = (newMsgs.size() != _cachedMsgs.size());
+        if (!changed) {
+            for (size_t i = 0; i < newMsgs.size(); i++) {
+                if (newMsgs[i].status != _cachedMsgs[i].status) { changed = true; break; }
+            }
+        }
+        if (changed) {
+            _cachedMsgs = newMsgs;
             _lastMsgCount = (int)_cachedMsgs.size();
             rebuildMessages();
         }
@@ -179,11 +197,25 @@ void LvMessageView::rebuildMessages() {
         }
         lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
 
-        // Message label with word wrap
+        // Message label with word wrap — status-based colors for outgoing
+        uint32_t textColor = Theme::ACCENT; // incoming default
+        if (!msg.incoming) {
+            switch (msg.status) {
+                case LXMFStatus::QUEUED:
+                case LXMFStatus::SENDING:
+                    textColor = Theme::WARNING_CLR; break;
+                case LXMFStatus::SENT:
+                case LXMFStatus::DELIVERED:
+                    textColor = Theme::PRIMARY; break;
+                case LXMFStatus::FAILED:
+                    textColor = Theme::ERROR_CLR; break;
+                default:
+                    textColor = Theme::PRIMARY; break;
+            }
+        }
         lv_obj_t* lbl = lv_label_create(box);
         lv_obj_set_style_text_font(lbl, font, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(
-            msg.incoming ? Theme::ACCENT : Theme::PRIMARY), 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(textColor), 0);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(lbl, maxBubbleW - 14);
         lv_label_set_text(lbl, msg.content.c_str());

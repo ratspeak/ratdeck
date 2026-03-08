@@ -23,6 +23,7 @@ public:
     void setPeerHex(const std::string& hex) { _peerHex = hex; }
     void setLXMFManager(LXMFManager* lxmf) { _lxmf = lxmf; }
     void setAnnounceManager(AnnounceManager* am) { _am = am; }
+    void setUIManager(class UIManager* ui) { _ui = ui; }
     void setBackCallback(BackCallback cb) { _onBack = cb; }
 
     const char* title() const override { return "Chat"; }
@@ -34,6 +35,7 @@ private:
 
     LXMFManager* _lxmf = nullptr;
     AnnounceManager* _am = nullptr;
+    class UIManager* _ui = nullptr;
     BackCallback _onBack;
     std::string _peerHex;
     std::string _inputText;

@@ -14,6 +14,8 @@
 class LXMFManager {
 public:
     using MessageCallback = std::function<void(const LXMFMessage&)>;
+    using StatusCallback = std::function<void(const std::string& peerHex, double timestamp, LXMFStatus status)>;
+    void setStatusCallback(StatusCallback cb) { _statusCb = cb; }
 
     bool begin(ReticulumManager* rns, MessageStore* store);
     void loop();
@@ -35,6 +37,7 @@ private:
     ReticulumManager* _rns = nullptr;
     MessageStore* _store = nullptr;
     MessageCallback _onMessage;
+    StatusCallback _statusCb;
     std::deque<LXMFMessage> _outQueue;
 
     void computeUnreadFromDisk();

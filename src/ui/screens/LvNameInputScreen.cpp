@@ -35,7 +35,7 @@ void LvNameInputScreen::createUI(lv_obj_t* parent) {
     lv_obj_align(_textarea, LV_ALIGN_TOP_MID, 0, 95);
     lv_textarea_set_max_length(_textarea, MAX_NAME_LEN);
     lv_textarea_set_one_line(_textarea, true);
-    lv_textarea_set_placeholder_text(_textarea, "Name");
+    lv_textarea_set_placeholder_text(_textarea, "Optional");
     lv_obj_add_style(_textarea, LvTheme::styleTextarea(), 0);
     lv_obj_set_style_text_font(_textarea, &lv_font_montserrat_14, 0);
 
@@ -61,8 +61,8 @@ bool LvNameInputScreen::handleKey(const KeyEvent& event) {
 
     if (event.enter || event.character == '\n' || event.character == '\r') {
         const char* text = lv_textarea_get_text(_textarea);
-        if (text && strlen(text) > 0 && _doneCb) {
-            _doneCb(String(text));
+        if (_doneCb) {
+            _doneCb(String(text && strlen(text) > 0 ? text : ""));
         }
         return true;
     }

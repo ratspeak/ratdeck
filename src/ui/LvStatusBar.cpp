@@ -17,21 +17,21 @@ void LvStatusBar::create(lv_obj_t* parent) {
 
     const lv_font_t* font = &lv_font_montserrat_12;
 
-    // Left side: LoRa BLE WiFi indicators
-    _lblLora = lv_label_create(_bar);
-    lv_obj_set_style_text_font(_lblLora, font, 0);
-    lv_label_set_text(_lblLora, "LoRa");
-    lv_obj_align(_lblLora, LV_ALIGN_LEFT_MID, 4, 0);
-
-    _lblBle = lv_label_create(_bar);
-    lv_obj_set_style_text_font(_lblBle, font, 0);
-    lv_label_set_text(_lblBle, "BLE");
-    lv_obj_align(_lblBle, LV_ALIGN_LEFT_MID, 50, 0);
-
-    _lblWifi = lv_label_create(_bar);
-    lv_obj_set_style_text_font(_lblWifi, font, 0);
-    lv_label_set_text(_lblWifi, "WiFi");
-    lv_obj_align(_lblWifi, LV_ALIGN_LEFT_MID, 84, 0);
+    // Left side: Signal bars (3 bars, increasing height)
+    static const int barW = 4;
+    static const int barH[] = {6, 10, 14};
+    static const int barGap = 2;
+    for (int i = 0; i < 3; i++) {
+        _bars[i] = lv_obj_create(_bar);
+        lv_obj_set_size(_bars[i], barW, barH[i]);
+        lv_obj_set_style_radius(_bars[i], 1, 0);
+        lv_obj_set_style_bg_opa(_bars[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(_bars[i], 0, 0);
+        lv_obj_set_style_pad_all(_bars[i], 0, 0);
+        int x = 4 + i * (barW + barGap);
+        int y = Theme::STATUS_BAR_H - barH[i] - 3;  // bottom-aligned
+        lv_obj_set_pos(_bars[i], x, y);
+    }
 
     // Center: "Ratspeak"
     _lblBrand = lv_label_create(_bar);
@@ -126,32 +126,9 @@ void LvStatusBar::showToast(const char* msg, uint32_t durationMs) {
 }
 
 void LvStatusBar::refreshIndicators() {
-    bool flashing = _announceFlashEnd > 0 && millis() < _announceFlashEnd;
-
-    // LoRa: green=online, red=offline, cyan if TX flash
-    if (flashing) {
-        lv_obj_set_style_text_color(_lblLora, lv_color_hex(Theme::ACCENT), 0);
-    } else if (_loraOnline) {
-        lv_obj_set_style_text_color(_lblLora, lv_color_hex(Theme::PRIMARY), 0);
-    } else {
-        lv_obj_set_style_text_color(_lblLora, lv_color_hex(Theme::ERROR_CLR), 0);
-    }
-
-    // BLE: green=active, yellow=enabled-not-connected, red=disabled
-    if (_bleActive) {
-        lv_obj_set_style_text_color(_lblBle, lv_color_hex(Theme::PRIMARY), 0);
-    } else if (_bleEnabled) {
-        lv_obj_set_style_text_color(_lblBle, lv_color_hex(Theme::WARNING_CLR), 0);
-    } else {
-        lv_obj_set_style_text_color(_lblBle, lv_color_hex(Theme::ERROR_CLR), 0);
-    }
-
-    // WiFi: green=connected, yellow=enabled-not-connected, red=disabled
-    if (_wifiActive) {
-        lv_obj_set_style_text_color(_lblWifi, lv_color_hex(Theme::PRIMARY), 0);
-    } else if (_wifiEnabled) {
-        lv_obj_set_style_text_color(_lblWifi, lv_color_hex(Theme::WARNING_CLR), 0);
-    } else {
-        lv_obj_set_style_text_color(_lblWifi, lv_color_hex(Theme::ERROR_CLR), 0);
+    bool connected = _loraOnline || _wifiActive;
+    uint32_t col = connected ? Theme::PRIMARY : Theme::ERROR_CLR;
+    for (int i = 0; i < 3; i++) {
+        if (_bars[i]) lv_obj_set_style_bg_color(_bars[i], lv_color_hex(col), 0);
     }
 }

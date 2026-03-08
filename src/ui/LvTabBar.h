@@ -4,7 +4,7 @@
 
 class LvTabBar {
 public:
-    enum Tab { TAB_HOME = 0, TAB_MSGS, TAB_NODES, TAB_SETUP, TAB_COUNT = 4 };
+    enum Tab { TAB_HOME = 0, TAB_CONTACTS, TAB_MSGS, TAB_NODES, TAB_SETTINGS, TAB_COUNT = 5 };
 
     void create(lv_obj_t* parent);
 
@@ -28,5 +28,5 @@ private:
     int _unread[TAB_COUNT] = {};
     TabCallback _tabCb = nullptr;
 
-    static constexpr const char* TAB_NAMES[TAB_COUNT] = {"Home", "Msgs", "Nodes", "Setup"};
+    static constexpr const char* TAB_NAMES[TAB_COUNT] = {"Home", "Friends", "Msgs", "Peers", "Setup"};
 };

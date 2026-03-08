@@ -125,6 +125,15 @@ void AnnounceManager::loop() {
     }
 }
 
+int AnnounceManager::nodesOnlineSince(unsigned long maxAgeMs) const {
+    unsigned long now = millis();
+    int count = 0;
+    for (const auto& n : _nodes) {
+        if (now - n.lastSeen <= maxAgeMs) count++;
+    }
+    return count;
+}
+
 const DiscoveredNode* AnnounceManager::findNode(const RNS::Bytes& hash) const {
     for (const auto& n : _nodes) { if (n.hash == hash) return &n; }
     return nullptr;

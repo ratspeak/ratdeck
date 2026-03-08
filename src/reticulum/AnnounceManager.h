@@ -44,6 +44,7 @@ public:
 
     const std::vector<DiscoveredNode>& nodes() const { return _nodes; }
     int nodeCount() const { return _nodes.size(); }
+    int nodesOnlineSince(unsigned long maxAgeMs) const;
     const DiscoveredNode* findNode(const RNS::Bytes& hash) const;
     const DiscoveredNode* findNodeByHex(const std::string& hexHash) const;
     void addManualContact(const std::string& hexHash, const std::string& name);

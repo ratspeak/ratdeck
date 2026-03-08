@@ -45,6 +45,7 @@ public:
 
     const RNS::Identity& identity() const { return _identity; }
     String identityHash() const;
+    String destinationHashHex() const;
 
     bool isTransportActive() const { return _transportActive; }
     size_t pathCount() const;

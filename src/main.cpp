@@ -35,6 +35,7 @@
 #include "ui/screens/LvNodesScreen.h"
 #include "ui/screens/LvMessagesScreen.h"
 #include "ui/screens/LvMessageView.h"
+#include "ui/screens/LvContactsScreen.h"
 #include "ui/screens/LvSettingsScreen.h"
 #include "ui/screens/LvHelpOverlay.h"
 // Map screen removed
@@ -113,6 +114,7 @@ LvBootScreen lvBootScreen;
 LvHomeScreen lvHomeScreen;
 LvNodesScreen lvNodesScreen;
 LvMessagesScreen lvMessagesScreen;
+LvContactsScreen lvContactsScreen;
 LvMessageView lvMessageView;
 LvSettingsScreen lvSettingsScreen;
 LvHelpOverlay lvHelpOverlay;
@@ -156,13 +158,14 @@ static RNS::Bytes encodeAnnounceName(const String& name) {
 }
 
 static void announceWithName() {
+    Serial.println("[ANNOUNCE-TX] announceWithName() entry");
     RNS::Bytes appData = encodeAnnounceName(userConfig.settings().displayName);
     rns.announce(appData);
     ui.statusBar().flashAnnounce();
     ui.statusBar().showToast("Announce sent!");
     ui.lvStatusBar().flashAnnounce();
     ui.lvStatusBar().showToast("Announce sent!");
-    Serial.println("[ANNOUNCE] Sent with display name");
+    Serial.println("[ANNOUNCE-TX] announceWithName() exit");
 }
 
 // =============================================================================
@@ -186,7 +189,8 @@ static void reloadTCPClients() {
                 RNS::Transport::register_interface(tcpIfaces.back());
                 tcp->start();
                 tcpClients.push_back(tcp);
-                Serial.printf("[TCP] Created client: %s:%d\n", ep.host.c_str(), ep.port);
+                Serial.printf("[TCP] Created client: %s:%d (registered with Transport, mode=GATEWAY)\n", ep.host.c_str(), ep.port);
+                Serial.printf("[TCP] Total interfaces registered: %d\n", (int)RNS::Transport::get_interfaces().size());
             }
         }
     }
@@ -212,7 +216,7 @@ void onHotkeyNewMsg() {
     ui.setLvScreen(&lvMessagesScreen);
 }
 void onHotkeySettings() {
-    ui.lvTabBar().setActiveTab(LvTabBar::TAB_SETUP);
+    ui.lvTabBar().setActiveTab(LvTabBar::TAB_SETTINGS);
     ui.setLvScreen(&lvSettingsScreen);
 }
 void onHotkeyAnnounce() {
@@ -352,11 +356,7 @@ void setup() {
     digitalWrite(LORA_CS, HIGH);
     delay(10);
     if (sdStore.begin(&sharedSPI, SD_CS)) {
-        sdStore.ensureDir("/ratputer");
-        sdStore.ensureDir("/ratputer/config");
-        sdStore.ensureDir("/ratputer/messages");
-        sdStore.ensureDir("/ratputer/contacts");
-        sdStore.ensureDir("/ratputer/identity");
+        sdStore.formatForRatputer();
         Serial.println("[SD] Card ready");
     } else {
         Serial.println("[SD] Not detected");
@@ -530,6 +530,28 @@ void setup() {
     // (LVGL boot renders via lv_timer_handler in setProgress)
     userConfig.load(sdStore, flash);
 
+    // Sync display name between active identity slot and config.
+    // The identity slot is the source of truth for the name.
+    {
+        String slotName;
+        if (identityMgr.syncNameFromActive(slotName)) {
+            if (!slotName.isEmpty()) {
+                // Slot has a name — use it (overrides any stale config value)
+                if (userConfig.settings().displayName != slotName) {
+                    Serial.printf("[BOOT] Name from identity slot: '%s'\n", slotName.c_str());
+                    userConfig.settings().displayName = slotName;
+                    userConfig.save(sdStore, flash);
+                }
+            } else if (!userConfig.settings().displayName.isEmpty()) {
+                // Slot has no name but config does — seed the slot (first boot migration)
+                identityMgr.setDisplayName(identityMgr.activeIndex(),
+                    userConfig.settings().displayName);
+                Serial.printf("[BOOT] Seeded identity slot name: '%s'\n",
+                    userConfig.settings().displayName.c_str());
+            }
+        }
+    }
+
     // Step 20: Boot loop recovery
     if (bootLoopRecovery) {
         userConfig.settings().wifiMode = RAT_WIFI_OFF;
@@ -658,8 +680,20 @@ void setup() {
     lvHomeScreen.setReticulumManager(&rns);
     lvHomeScreen.setRadio(&radio);
     lvHomeScreen.setUserConfig(&userConfig);
+    lvHomeScreen.setLXMFManager(&lxmf);
+    lvHomeScreen.setAnnounceManager(announceManager);
+    lvHomeScreen.setRadioOnline(radioOnline);
     lvHomeScreen.setAnnounceCallback([]() {
         announceWithName();
+        Serial.println("[HOME] Announce triggered via Enter");
+    });
+
+    lvContactsScreen.setAnnounceManager(announceManager);
+    lvContactsScreen.setUIManager(&ui);
+    lvContactsScreen.setNodeSelectedCallback([](const std::string& peerHex) {
+        lvMessageView.setPeerHex(peerHex);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_MSGS);
+        ui.setLvScreen(&lvMessageView);
     });
 
     lvNodesScreen.setAnnounceManager(announceManager);
@@ -680,6 +714,7 @@ void setup() {
 
     lvMessageView.setLXMFManager(&lxmf);
     lvMessageView.setAnnounceManager(announceManager);
+    lvMessageView.setUIManager(&ui);
     lvMessageView.setBackCallback([]() {
         ui.setLvScreen(&lvMessagesScreen);
     });
@@ -696,6 +731,7 @@ void setup() {
     lvSettingsScreen.setIdentityManager(&identityMgr);
     lvSettingsScreen.setUIManager(&ui);
     lvSettingsScreen.setIdentityHash(rns.identityHash());
+    lvSettingsScreen.setDestinationHash(rns.destinationHashHex());
     lvSettingsScreen.setSaveCallback([]() -> bool {
         bool ok = userConfig.save(sdStore, flash);
         Serial.printf("[CONFIG] Save %s\n", ok ? "OK" : "FAILED");
@@ -711,10 +747,11 @@ void setup() {
     lvHelpOverlay.create();
 
     // Tab bar callbacks — LVGL
-    lvTabScreens[LvTabBar::TAB_HOME]  = &lvHomeScreen;
-    lvTabScreens[LvTabBar::TAB_MSGS]  = &lvMessagesScreen;
-    lvTabScreens[LvTabBar::TAB_NODES] = &lvNodesScreen;
-    lvTabScreens[LvTabBar::TAB_SETUP] = &lvSettingsScreen;
+    lvTabScreens[LvTabBar::TAB_HOME]     = &lvHomeScreen;
+    lvTabScreens[LvTabBar::TAB_CONTACTS] = &lvContactsScreen;
+    lvTabScreens[LvTabBar::TAB_MSGS]     = &lvMessagesScreen;
+    lvTabScreens[LvTabBar::TAB_NODES]    = &lvNodesScreen;
+    lvTabScreens[LvTabBar::TAB_SETTINGS] = &lvSettingsScreen;
 
     ui.lvTabBar().setTabCallback([](int tab) {
         if (lvTabScreens[tab]) ui.setLvScreen(lvTabScreens[tab]);
@@ -722,9 +759,19 @@ void setup() {
 
     // Name input screen (first boot only — when no display name is set)
     lvNameInputScreen.setDoneCallback([](const String& name) {
-        userConfig.settings().displayName = name;
+        String finalName = name;
+        if (finalName.isEmpty()) {
+            // Auto-generate: Ratspeak.org-xxx (first 3 chars of LXMF dest hash)
+            String dh = rns.destinationHashHex();
+            finalName = "Ratspeak.org-" + dh.substring(0, 3);
+        }
+        userConfig.settings().displayName = finalName;
         userConfig.save(sdStore, flash);
-        Serial.printf("[BOOT] Display name set: '%s'\n", name.c_str());
+        // Also save to active identity slot
+        if (identityMgr.activeIndex() >= 0) {
+            identityMgr.setDisplayName(identityMgr.activeIndex(), finalName);
+        }
+        Serial.printf("[BOOT] Display name set: '%s'\n", finalName.c_str());
 
         // Transition to home screen
         ui.setBootMode(false);
@@ -866,6 +913,13 @@ void loop() {
             // Create TCP clients (safe to call multiple times)
             if (tcpClients.empty()) {
                 reloadTCPClients();
+                // Announce over TCP now that it's available
+                if (!tcpClients.empty()) {
+                    Serial.println("[TCP] Sending announce over new TCP connection...");
+                    RNS::Bytes appData = encodeAnnounceName(userConfig.settings().displayName);
+                    rns.announce(appData);
+                    lastAutoAnnounce = millis();
+                }
             }
         } else if (!connected && wifiSTAConnected) {
             wifiSTAConnected = false;

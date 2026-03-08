@@ -46,6 +46,15 @@ uint64_t SDStore::usedBytes() const { return _ready ? SD.usedBytes() : 0; }
 bool SDStore::ensureDir(const char* path) {
     if (!_ready) return false;
     if (SD.exists(path)) return true;
+    // Create parent directories recursively
+    String pathStr = String(path);
+    int lastSlash = pathStr.lastIndexOf('/');
+    if (lastSlash > 0) {
+        String parent = pathStr.substring(0, lastSlash);
+        if (!SD.exists(parent.c_str())) {
+            ensureDir(parent.c_str());
+        }
+    }
     return SD.mkdir(path);
 }
 
@@ -156,6 +165,7 @@ bool SDStore::wipeRatputer() {
     wipeDir("/ratputer/contacts");
     wipeDir("/ratputer/identity");
     wipeDir("/ratputer/config");
+    wipeDir("/ratputer/transport");
     SD.rmdir("/ratputer");
     Serial.println("[SD] Wipe complete, recreating dirs...");
     return formatForRatputer();
@@ -187,6 +197,7 @@ bool SDStore::formatForRatputer() {
     ok &= ensureDir("/ratputer/messages");
     ok &= ensureDir("/ratputer/contacts");
     ok &= ensureDir("/ratputer/identity");
+    ok &= ensureDir("/ratputer/transport");
     if (ok) Serial.println("[SD] Directory structure ready");
     return ok;
 }

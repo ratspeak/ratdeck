@@ -1,10 +1,12 @@
 #include "LvHomeScreen.h"
 #include "ui/Theme.h"
 #include "reticulum/ReticulumManager.h"
+#include "reticulum/LXMFManager.h"
+#include "reticulum/AnnounceManager.h"
 #include "radio/SX1262.h"
 #include "config/UserConfig.h"
 #include <Arduino.h>
-#include <esp_system.h>
+#include <WiFi.h>
 
 void LvHomeScreen::createUI(lv_obj_t* parent) {
     _screen = parent;
@@ -23,29 +25,25 @@ void LvHomeScreen::createUI(lv_obj_t* parent) {
         return lbl;
     };
 
-    _lblId = mkLabel("Identity: ...");
-    _lblTransport = mkLabel("Transport: ...");
-    _lblPaths = mkLabel("Paths: ...");
-    _lblLora = mkLabel("Radio: ...");
-    _lblHeap = mkLabel("Heap: ...");
-    _lblPsram = mkLabel("PSRAM: ...");
-    _lblUptime = mkLabel("Uptime: 0m");
+    _lblName = mkLabel("Name: ...");
+    _lblId = mkLabel("ID: ...");
+    _lblStatus = mkLabel("Status: ...");
+    _lblNodes = mkLabel("Online Nodes: ...");
 
-    // Force refresh on new UI — invalidate cache
+    // Force refresh on new UI
     _lastUptime = ULONG_MAX;
     _lastHeap = UINT32_MAX;
     refreshUI();
 }
 
 void LvHomeScreen::onEnter() {
-    // Invalidate cache so refreshUI() always updates after screen transition
     _lastUptime = ULONG_MAX;
     _lastHeap = UINT32_MAX;
     refreshUI();
 }
 
 void LvHomeScreen::refreshUI() {
-    if (!_lblId) return;
+    if (!_lblName) return;
 
     unsigned long upMins = millis() / 60000;
     uint32_t heap = ESP.getFreeHeap() / 1024;
@@ -53,39 +51,51 @@ void LvHomeScreen::refreshUI() {
     _lastUptime = upMins;
     _lastHeap = heap;
 
+    // Name
+    if (_cfg && !_cfg->settings().displayName.isEmpty()) {
+        lv_label_set_text_fmt(_lblName, "Name: %s", _cfg->settings().displayName.c_str());
+    } else if (_rns) {
+        String dh = _rns->destinationHashHex();
+        String fallback = "Ratspeak.org-" + dh.substring(0, 3);
+        lv_label_set_text_fmt(_lblName, "Name: %s", fallback.c_str());
+    } else {
+        lv_label_set_text(_lblName, "Name: ---");
+    }
+
+    // ID (LXMF destination hash, 12 chars)
     if (_rns) {
-        lv_label_set_text_fmt(_lblId, "ID: %s", _rns->identityHash().c_str());
-        lv_label_set_text_fmt(_lblTransport, "Transport: %s",
-            _rns->isTransportActive() ? "ACTIVE" : "OFFLINE");
-        lv_label_set_text_fmt(_lblPaths, "Paths: %d  Links: %d",
-            (int)_rns->pathCount(), (int)_rns->linkCount());
+        String dh = _rns->destinationHashHex();
+        if (dh.length() > 12) dh = dh.substring(0, 12);
+        lv_label_set_text_fmt(_lblId, "ID: %s", dh.c_str());
     } else {
-        lv_label_set_text(_lblId, "Identity: ---");
-        lv_label_set_text(_lblTransport, "Transport: OFFLINE");
-        lv_label_set_text(_lblPaths, "Paths: 0  Links: 0");
+        lv_label_set_text(_lblId, "ID: ---");
     }
 
-    if (_radio && _radio->isRadioOnline()) {
-        lv_label_set_text_fmt(_lblLora, "LoRa: SF%d BW%luk %ddBm",
-            _radio->getSpreadingFactor(),
-            (unsigned long)(_radio->getSignalBandwidth() / 1000),
-            _radio->getTxPower());
-        lv_obj_set_style_text_color(_lblLora, lv_color_hex(Theme::PRIMARY), 0);
+    // Status
+    bool loraUp = _radioOnline && _radio && _radio->isRadioOnline();
+    bool tcpUp = WiFi.status() == WL_CONNECTED;
+    if (loraUp && tcpUp) {
+        lv_label_set_text(_lblStatus, "Status: Online (LoRa/TCP)");
+        lv_obj_set_style_text_color(_lblStatus, lv_color_hex(Theme::PRIMARY), 0);
+    } else if (loraUp) {
+        lv_label_set_text(_lblStatus, "Status: Online (LoRa)");
+        lv_obj_set_style_text_color(_lblStatus, lv_color_hex(Theme::PRIMARY), 0);
+    } else if (tcpUp) {
+        lv_label_set_text(_lblStatus, "Status: Online (TCP)");
+        lv_obj_set_style_text_color(_lblStatus, lv_color_hex(Theme::PRIMARY), 0);
     } else {
-        lv_label_set_text(_lblLora, "Radio: OFFLINE");
-        lv_obj_set_style_text_color(_lblLora, lv_color_hex(Theme::ERROR_CLR), 0);
+        lv_label_set_text(_lblStatus, "Status: Offline");
+        lv_obj_set_style_text_color(_lblStatus, lv_color_hex(Theme::ERROR_CLR), 0);
     }
 
-    lv_label_set_text_fmt(_lblHeap, "Heap: %lukB free",
-        (unsigned long)(ESP.getFreeHeap() / 1024));
-    lv_label_set_text_fmt(_lblPsram, "PSRAM: %lukB free",
-        (unsigned long)(ESP.getFreePsram() / 1024));
-
-    if (upMins >= 60) {
-        lv_label_set_text_fmt(_lblUptime, "Uptime: %luh %lum", upMins / 60, upMins % 60);
+    // Online Nodes (30 min window)
+    if (_am) {
+        int online = _am->nodesOnlineSince(1800000);
+        lv_label_set_text_fmt(_lblNodes, "Online Nodes: %d", online);
     } else {
-        lv_label_set_text_fmt(_lblUptime, "Uptime: %lum", upMins);
+        lv_label_set_text(_lblNodes, "Online Nodes: 0");
     }
+
 }
 
 bool LvHomeScreen::handleKey(const KeyEvent& event) {

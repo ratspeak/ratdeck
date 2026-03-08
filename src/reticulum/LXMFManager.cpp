@@ -21,7 +21,14 @@ void LXMFManager::loop() {
     if (sendDirect(msg)) {
         Serial.printf("[LXMF] Queue drain: status=%s dest=%s\n",
                       msg.statusStr(), msg.destHash.toHex().substr(0, 8).c_str());
+        // Re-save with updated status (overwrite the QUEUED version)
+        msg.messageId = RNS::Bytes(); // Clear so saveMessage reuses timestamp key
         if (_store) { _store->saveMessage(msg); }
+        // Fire status callback so UI can refresh
+        if (_statusCb) {
+            std::string peerHex = msg.destHash.toHex();
+            _statusCb(peerHex, msg.timestamp, msg.status);
+        }
         _outQueue.pop_front();
     }
 }
@@ -43,37 +50,47 @@ bool LXMFManager::sendMessage(const RNS::Bytes& destHash, const std::string& con
     msg.status = LXMFStatus::QUEUED;
     if ((int)_outQueue.size() >= RATDECK_MAX_OUTQUEUE) { _outQueue.pop_front(); }
     _outQueue.push_back(msg);
+    // Immediately save with QUEUED status so it appears in getMessages() right away
+    if (_store) { _store->saveMessage(msg); }
     return true;
 }
 
 bool LXMFManager::sendDirect(LXMFMessage& msg) {
+    Serial.printf("[LXMF] sendDirect: dest=%s\n", msg.destHash.toHex().substr(0, 12).c_str());
     RNS::Identity recipientId = RNS::Identity::recall(msg.destHash);
     if (!recipientId) {
         msg.retries++;
         if (msg.retries >= 5) {
-            Serial.printf("[LXMF] recall failed for %s after %d retries — marking FAILED\n",
+            Serial.printf("[LXMF] recall FAILED for %s after %d retries — marking FAILED\n",
                           msg.destHash.toHex().substr(0, 8).c_str(), msg.retries);
             msg.status = LXMFStatus::FAILED;
             return true;
         }
-        Serial.printf("[LXMF] recall failed for %s (retry %d/5) — keeping queued\n",
+        Serial.printf("[LXMF] recall FAILED for %s (retry %d/5) — identity not known yet\n",
                       msg.destHash.toHex().substr(0, 8).c_str(), msg.retries);
         return false;  // keep in queue, retry next loop
     }
+    Serial.printf("[LXMF] recall OK: identity=%s\n", recipientId.hexhash().c_str());
     RNS::Destination outDest(recipientId, RNS::Type::Destination::OUT,
         RNS::Type::Destination::SINGLE, "lxmf", "delivery");
+    Serial.printf("[LXMF] outDest hash: %s\n", outDest.hash().toHex().substr(0, 12).c_str());
     std::vector<uint8_t> payload = msg.packFull(_rns->identity());
-    if (payload.empty()) { msg.status = LXMFStatus::FAILED; return true; }
+    if (payload.empty()) { Serial.println("[LXMF] packFull returned empty!"); msg.status = LXMFStatus::FAILED; return true; }
     RNS::Bytes payloadBytes(payload.data(), payload.size());
-    if (payloadBytes.size() > RNS::Type::Reticulum::MDU) { msg.status = LXMFStatus::FAILED; return true; }
+    if (payloadBytes.size() > RNS::Type::Reticulum::MDU) {
+        Serial.printf("[LXMF] payload too large: %d > MDU\n", (int)payloadBytes.size());
+        msg.status = LXMFStatus::FAILED; return true;
+    }
     msg.status = LXMFStatus::SENDING;
+    Serial.printf("[LXMF] sending packet: %d bytes to %s\n", (int)payloadBytes.size(), outDest.hash().toHex().substr(0, 12).c_str());
     RNS::Packet packet(outDest, payloadBytes);
     RNS::PacketReceipt receipt = packet.send();
     if (receipt) {
         msg.status = LXMFStatus::SENT;
         msg.messageId = RNS::Identity::full_hash(payloadBytes);
-        Serial.printf("[LXMF] Sent %d bytes\n", (int)payloadBytes.size());
+        Serial.printf("[LXMF] SENT OK: %d bytes, msgId=%s\n", (int)payloadBytes.size(), msg.messageId.toHex().substr(0, 8).c_str());
     } else {
+        Serial.println("[LXMF] send FAILED: no receipt");
         msg.status = LXMFStatus::FAILED;
     }
     return true;

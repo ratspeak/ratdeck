@@ -26,6 +26,7 @@ private:
     void enforceFlashLimit(const std::string& peerHex);
     void enforceSDLimit(const std::string& peerHex);
     void migrateFlashToSD();
+    void migrateTruncatedDirs();
 
     FlashStore* _flash = nullptr;
     SDStore* _sd = nullptr;

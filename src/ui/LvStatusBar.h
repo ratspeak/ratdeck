@@ -25,9 +25,7 @@ private:
     void refreshIndicators();
 
     lv_obj_t* _bar = nullptr;
-    lv_obj_t* _lblLora = nullptr;
-    lv_obj_t* _lblBle = nullptr;
-    lv_obj_t* _lblWifi = nullptr;
+    lv_obj_t* _bars[3] = {};
     lv_obj_t* _lblBrand = nullptr;
     lv_obj_t* _lblBatt = nullptr;
     lv_obj_t* _toast = nullptr;

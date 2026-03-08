@@ -67,7 +67,14 @@ void TCPClientInterface::loop() {
 }
 
 void TCPClientInterface::send_outgoing(const RNS::Bytes& data) {
-    if (!_online || !_client.connected()) return;
+    if (!_online) {
+        Serial.printf("[TCP] TX BLOCKED (offline) %d bytes to %s:%d\n", (int)data.size(), _host.c_str(), _port);
+        return;
+    }
+    if (!_client.connected()) {
+        Serial.printf("[TCP] TX BLOCKED (disconnected) %d bytes to %s:%d\n", (int)data.size(), _host.c_str(), _port);
+        return;
+    }
 
     sendFrame(data.data(), data.size());
     Serial.printf("[TCP] TX %d bytes to %s:%d\n", (int)data.size(), _host.c_str(), _port);

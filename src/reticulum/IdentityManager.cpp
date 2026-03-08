@@ -61,7 +61,7 @@ int IdentityManager::createIdentity(const String& displayName) {
 
     IdentitySlot slot;
     slot.hash = newId.hexhash();
-    slot.displayName = displayName;
+    slot.displayName = "";  // New identity starts unnamed
     slot.keyPath = keyPath;
     slot.active = false;
     _slots.push_back(slot);
@@ -131,6 +131,17 @@ void IdentityManager::setDisplayName(int index, const String& name) {
     if (index < 0 || index >= (int)_slots.size()) return;
     _slots[index].displayName = name;
     saveSlotMeta();
+}
+
+String IdentityManager::getDisplayName(int index) const {
+    if (index < 0 || index >= (int)_slots.size()) return "";
+    return _slots[index].displayName;
+}
+
+bool IdentityManager::syncNameFromActive(String& outName) const {
+    if (_activeIdx < 0 || _activeIdx >= (int)_slots.size()) return false;
+    outName = _slots[_activeIdx].displayName;
+    return true;
 }
 
 void IdentityManager::refresh() {

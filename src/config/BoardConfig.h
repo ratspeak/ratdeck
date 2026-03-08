@@ -22,10 +22,10 @@
 // TCXO voltage: 1.8V for T-Deck Plus integrated SX1262 (Ratputer Cap LoRa uses 3.0V/0x06)
 #define LORA_TCXO_VOLTAGE       0x02   // MODE_TCXO_1_8V_6X
 #define LORA_DEFAULT_FREQ       915000000
-#define LORA_DEFAULT_BW         125000
+#define LORA_DEFAULT_BW         250000   // Balanced preset
 #define LORA_DEFAULT_SF         9
 #define LORA_DEFAULT_CR         5
-#define LORA_DEFAULT_TX_POWER   22
+#define LORA_DEFAULT_TX_POWER   14       // Balanced preset
 #define LORA_DEFAULT_PREAMBLE   18
 
 // --- Shared SPI Bus (display + LoRa + SD) ---

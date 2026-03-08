@@ -14,6 +14,9 @@
 #include <Arduino.h>
 #include <esp_system.h>
 #include <nvs_flash.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
 struct RadioPresetLv {
     const char* name;
@@ -80,6 +83,9 @@ void LvSettingsScreen::buildItems() {
     _items.push_back({"Version", SettingType::READONLY, nullptr, nullptr,
         [](int) { return String(RATDECK_VERSION_STRING); }});
     idx++;
+    _items.push_back({"LXMF Addr", SettingType::READONLY, nullptr, nullptr,
+        [this](int) { return _destinationHash.length() > 0 ? _destinationHash.substring(0, 16) : String("unknown"); }});
+    idx++;
     _items.push_back({"Identity", SettingType::READONLY, nullptr, nullptr,
         [this](int) { return _identityHash.substring(0, 16); }});
     idx++;
@@ -88,7 +94,13 @@ void LvSettingsScreen::buildItems() {
         nameItem.label = "Display Name";
         nameItem.type = SettingType::TEXT_INPUT;
         nameItem.textGetter = [&s]() { return s.displayName; };
-        nameItem.textSetter = [&s](const String& v) { s.displayName = v; };
+        nameItem.textSetter = [this, &s](const String& v) {
+            s.displayName = v;
+            // Keep active identity slot in sync
+            if (_idMgr && _idMgr->activeIndex() >= 0) {
+                _idMgr->setDisplayName(_idMgr->activeIndex(), v);
+            }
+        };
         nameItem.maxTextLen = 16;
         _items.push_back(nameItem);
         idx++;
@@ -100,8 +112,16 @@ void LvSettingsScreen::buildItems() {
         idSwitch.getter = [this]() { return _idMgr->activeIndex(); };
         idSwitch.setter = [this](int v) {
             if (v == _idMgr->activeIndex()) return;
+            // Save current display name to outgoing identity slot
+            if (_cfg) {
+                _idMgr->setDisplayName(_idMgr->activeIndex(), _cfg->settings().displayName);
+            }
             RNS::Identity newId;
             if (_idMgr->switchTo(v, newId)) {
+                // Load incoming identity's display name into config
+                if (_cfg) {
+                    _cfg->settings().displayName = _idMgr->getDisplayName(v);
+                }
                 if (_ui) _ui->lvStatusBar().showToast("Identity switched! Rebooting...", 2000);
                 applyAndSave();
                 delay(1000);
@@ -117,7 +137,8 @@ void LvSettingsScreen::buildItems() {
             auto& slot = _idMgr->identities()[i];
             static char labelBufs[8][32];
             if (!slot.displayName.isEmpty()) {
-                snprintf(labelBufs[i], sizeof(labelBufs[i]), "%s", slot.displayName.c_str());
+                snprintf(labelBufs[i], sizeof(labelBufs[i]), "%s [%.8s]",
+                         slot.displayName.c_str(), slot.hash.c_str());
             } else {
                 snprintf(labelBufs[i], sizeof(labelBufs[i]), "%.12s", slot.hash.c_str());
             }
@@ -330,6 +351,50 @@ void LvSettingsScreen::buildItems() {
     _categories.push_back({"Audio", audioStart, idx - audioStart,
         [&s]() { return s.audioEnabled ? (String(s.audioVolume) + "%") : String("OFF"); }});
 
+    // Info (diagnostics moved from Home screen)
+    int infoStart = idx;
+    _items.push_back({"Transport", SettingType::READONLY, nullptr, nullptr,
+        [this](int) { return _rns && _rns->isTransportActive() ? String("ACTIVE") : String("OFFLINE"); }});
+    idx++;
+    _items.push_back({"Paths", SettingType::READONLY, nullptr, nullptr,
+        [this](int) { return _rns ? String((int)_rns->pathCount()) : String("0"); }});
+    idx++;
+    _items.push_back({"Links", SettingType::READONLY, nullptr, nullptr,
+        [this](int) { return _rns ? String((int)_rns->linkCount()) : String("0"); }});
+    idx++;
+    _items.push_back({"Radio", SettingType::READONLY, nullptr, nullptr,
+        [this](int) {
+            if (_radio && _radio->isRadioOnline()) {
+                char buf[32];
+                snprintf(buf, sizeof(buf), "SF%d BW%luk %ddBm",
+                    _radio->getSpreadingFactor(),
+                    (unsigned long)(_radio->getSignalBandwidth() / 1000),
+                    _radio->getTxPower());
+                return String(buf);
+            }
+            return String("OFFLINE");
+        }});
+    idx++;
+    _items.push_back({"Heap", SettingType::READONLY, nullptr, nullptr,
+        [](int) { return String((unsigned long)(ESP.getFreeHeap() / 1024)) + " KB"; }});
+    idx++;
+    _items.push_back({"PSRAM", SettingType::READONLY, nullptr, nullptr,
+        [](int) { return String((unsigned long)(ESP.getFreePsram() / 1024)) + " KB"; }});
+    idx++;
+    _items.push_back({"Uptime", SettingType::READONLY, nullptr, nullptr,
+        [](int) -> String {
+            unsigned long m = millis() / 60000;
+            if (m >= 60) {
+                char buf[16];
+                snprintf(buf, sizeof(buf), "%luh %lum", m / 60, m % 60);
+                return String(buf);
+            }
+            return String(m) + "m";
+        }});
+    idx++;
+    _categories.push_back({"Info", infoStart, idx - infoStart,
+        [this]() { return _rns && _rns->isTransportActive() ? String("ACTIVE") : String("OFFLINE"); }});
+
     // System
     int sysStart = idx;
     _items.push_back({"Free Heap", SettingType::READONLY, nullptr, nullptr,
@@ -430,6 +495,63 @@ void LvSettingsScreen::buildItems() {
             ESP.restart();
         };
         _items.push_back(rebootItem);
+        idx++;
+    }
+    {
+        SettingItem updateCheck;
+        updateCheck.label = "Check for Updates";
+        updateCheck.type = SettingType::ACTION;
+        updateCheck.formatter = [](int) { return String("[Enter]"); };
+        updateCheck.action = [this]() {
+            if (WiFi.status() != WL_CONNECTED) {
+                if (_ui) _ui->lvStatusBar().showToast("Connect to WiFi to check!", 2000);
+                return;
+            }
+            if (_ui) _ui->lvStatusBar().showToast("Checking for updates...", 3000);
+
+            HTTPClient http;
+            http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+            http.setTimeout(8000);
+            http.begin("https://api.github.com/repos/defidude/Ratdeck/releases/latest");
+            http.addHeader("Accept", "application/vnd.github.v3+json");
+            int httpCode = http.GET();
+
+            if (httpCode != 200) {
+                http.end();
+                if (_ui) _ui->lvStatusBar().showToast("Couldn't fetch data!", 2000);
+                return;
+            }
+
+            String payload = http.getString();
+            http.end();
+
+            JsonDocument doc;
+            if (deserializeJson(doc, payload)) {
+                if (_ui) _ui->lvStatusBar().showToast("Couldn't fetch data!", 2000);
+                return;
+            }
+
+            const char* tagName = doc["tag_name"] | "";
+            // Strip leading 'v' if present
+            const char* remoteVer = tagName;
+            if (remoteVer[0] == 'v' || remoteVer[0] == 'V') remoteVer++;
+
+            if (strlen(remoteVer) == 0) {
+                if (_ui) _ui->lvStatusBar().showToast("Couldn't fetch data!", 2000);
+                return;
+            }
+
+            // Compare versions (simple string compare works for semver)
+            int cmp = strcmp(remoteVer, RATDECK_VERSION_STRING);
+            if (cmp > 0) {
+                char msg[64];
+                snprintf(msg, sizeof(msg), "v%s available! Flash at ratspeak.org", remoteVer);
+                if (_ui) _ui->lvStatusBar().showToast(msg, 5000);
+            } else {
+                if (_ui) _ui->lvStatusBar().showToast("You're up to date!", 2000);
+            }
+        };
+        _items.push_back(updateCheck);
         idx++;
     }
     _categories.push_back({"System", sysStart, idx - sysStart,

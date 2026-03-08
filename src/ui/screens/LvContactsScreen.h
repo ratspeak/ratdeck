@@ -5,41 +5,35 @@
 #include <string>
 #include <vector>
 
-class LXMFManager;
 class AnnounceManager;
 
-class LvMessagesScreen : public LvScreen {
+class LvContactsScreen : public LvScreen {
 public:
-    using OpenCallback = std::function<void(const std::string& peerHex)>;
+    using NodeSelectedCallback = std::function<void(const std::string& peerHex)>;
 
     void createUI(lv_obj_t* parent) override;
     void refreshUI() override;
     void onEnter() override;
     bool handleKey(const KeyEvent& event) override;
 
-    void setLXMFManager(LXMFManager* lxmf) { _lxmf = lxmf; }
     void setAnnounceManager(AnnounceManager* am) { _am = am; }
-    void setOpenCallback(OpenCallback cb) { _onOpen = cb; }
+    void setNodeSelectedCallback(NodeSelectedCallback cb) { _onSelect = cb; }
     void setUIManager(class UIManager* ui) { _ui = ui; }
     bool handleLongPress() override;
 
-    const char* title() const override { return "Messages"; }
+    const char* title() const override { return "Contacts"; }
 
 private:
     void rebuildList();
     void updateSelection(int oldIdx, int newIdx);
 
-    LXMFManager* _lxmf = nullptr;
     AnnounceManager* _am = nullptr;
     class UIManager* _ui = nullptr;
-    OpenCallback _onOpen;
-    int _lastConvCount = -1;
-    int _lastUnreadTotal = 0;
+    NodeSelectedCallback _onSelect;
+    bool _confirmDelete = false;
+    int _lastContactCount = -1;
     int _selectedIdx = 0;
-    std::vector<std::string> _sortedPeers;
-    enum LongPressState { LP_NONE, LP_MENU, LP_CONFIRM_DELETE };
-    LongPressState _lpState = LP_NONE;
-    int _menuIdx = 0;  // 0=Add Friend, 1=Delete Chat, 2=Cancel
+    std::vector<int> _contactIndices; // Maps row -> node index in _am->nodes()
 
     lv_obj_t* _list = nullptr;
     lv_obj_t* _lblEmpty = nullptr;
