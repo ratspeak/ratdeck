@@ -4,7 +4,7 @@
 
 Standalone [Reticulum](https://reticulum.network/) mesh node + [LXMF](https://github.com/markqvist/LXMF) encrypted messenger for the [LilyGo T-Deck Plus](https://www.lilygo.cc/products/t-deck-plus).
 
-Not an RNode. Not a gateway. A fully self-contained LoRa mesh communicator with a keyboard, trackball, and LVGL UI — no host computer required.
+Not an RNode. Not a gateway. A fully self-contained Reticulum instance with a keyboard, trackball, and screen — no host computer required.
 
 ```
 +----------------------------------------------+
@@ -22,12 +22,12 @@ Not an RNode. Not a gateway. A fully self-contained LoRa mesh communicator with 
 
 - **Encrypted LoRa messaging** — LXMF protocol, Ed25519 signatures, per-conversation storage
 - **Mesh networking** — Reticulum endpoint or transport node, automatic path discovery
-- **Node discovery** — see who's online, save contacts, manage friends
+- **Node discovery** — See who's online, save contacts, manage friends
 - **WiFi bridging** — TCP client to remote Reticulum nodes, or AP mode to bridge your desktop to LoRa
-- **BLE transport** — NimBLE Sideband interface
-- **On-device config** — 7-category settings, radio presets, multi-slot identity management
+- **BLE transport** — Unavailable
+- **Identity management** — Easily swap and manage different identities
 - **Dual storage** — LittleFS flash + SD card with atomic writes and automatic backup
-- **OTA-ready** — check for firmware updates directly from the device
+- **OTA-ready** — Check for firmware updates directly from the device
 
 Built on [microReticulum](https://github.com/attermann/microReticulum) with a register-level SX1262 driver and LVGL v8.4.
 
