@@ -924,21 +924,21 @@ void loop() {
             configTzTime("UTC5", "pool.ntp.org", "time.nist.gov");
             Serial.println("[NTP] Time sync started (UTC-5)");
 
-            // Create TCP clients (safe to call multiple times)
-            if (tcpClients.empty()) {
-                reloadTCPClients();
-                // Announce over TCP now that it's available
-                if (!tcpClients.empty()) {
-                    Serial.println("[TCP] Sending announce over new TCP connection...");
-                    RNS::Bytes appData = encodeAnnounceName(userConfig.settings().displayName);
-                    rns.announce(appData);
-                    lastAutoAnnounce = millis();
-                }
+            // Recreate TCP clients on every WiFi connect (old clients may have stale sockets)
+            reloadTCPClients();
+            // Announce over TCP now that it's available
+            if (!tcpClients.empty()) {
+                Serial.println("[TCP] Sending announce over new TCP connection...");
+                RNS::Bytes appData = encodeAnnounceName(userConfig.settings().displayName);
+                rns.announce(appData);
+                lastAutoAnnounce = millis();
             }
         } else if (!connected && wifiSTAConnected) {
             wifiSTAConnected = false;
             ui.statusBar().setWiFiActive(false);
             ui.lvStatusBar().setWiFiActive(false);
+            // Stop TCP clients cleanly so they don't spin on dead sockets
+            for (auto* tcp : tcpClients) tcp->stop();
             Serial.println("[WIFI] STA disconnected");
         }
     }

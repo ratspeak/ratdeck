@@ -6,8 +6,8 @@
 
 #define RATDECK_VERSION_MAJOR  1
 #define RATDECK_VERSION_MINOR  5
-#define RATDECK_VERSION_PATCH  1
-#define RATDECK_VERSION_STRING "1.5.1"
+#define RATDECK_VERSION_PATCH  2
+#define RATDECK_VERSION_STRING "1.5.2"
 
 // --- Feature Flags ---
 #define HAS_DISPLAY     true
@@ -44,7 +44,7 @@
 #define MAX_TCP_CONNECTIONS         4
 #define TCP_DEFAULT_PORT            4242
 #define TCP_RECONNECT_INTERVAL_MS   15000
-#define TCP_CONNECT_TIMEOUT_MS      500
+#define TCP_CONNECT_TIMEOUT_MS      5000
 
 // --- Limits ---
 #define RATDECK_MAX_NODES             200   // PSRAM allows more

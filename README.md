@@ -1,6 +1,6 @@
 # RatDeck
 
-**v1.5.1** | [Ratspeak.org](https://ratspeak.org)
+**v1.5.2** | [Ratspeak.org](https://ratspeak.org)
 
 Standalone [Reticulum](https://reticulum.network/) mesh node + [LXMF](https://github.com/markqvist/LXMF) encrypted messenger for the [LilyGo T-Deck Plus](https://www.lilygo.cc/products/t-deck-plus).
 
