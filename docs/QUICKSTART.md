@@ -82,7 +82,7 @@ The T-Deck Plus has a QWERTY keyboard, trackball, and touchscreen (touch current
 4. The other device appears in the **Peers** tab with RSSI and SNR
 5. Select the node and press Enter to start chatting
 
-Both devices must use the same frequency, spreading factor, bandwidth, and coding rate. Default: 915 MHz, SF9, BW 250 kHz, CR 4/5 (Balanced preset).
+Both devices must use the same frequency, spreading factor, bandwidth, and coding rate. Default: 915 MHz, SF9, BW 125 kHz, CR 4/5 (Balanced preset).
 
 ## WiFi Setup
 
@@ -138,9 +138,9 @@ Three presets available in Setup -> Radio:
 
 | Preset | SF | BW | CR | TX | Use Case |
 |--------|----|----|----|----|----------|
-| **Balanced** (default) | 9 | 250 kHz | 4/5 | 14 dBm | General use |
-| Long Range | 12 | 125 kHz | 4/8 | 17 dBm | Maximum range, slow |
-| Fast | 7 | 500 kHz | 4/5 | 10 dBm | Short range, fast |
+| **Balanced** (default) | 9 | 125 kHz | 4/5 | 17 dBm | General use |
+| Long Range | 12 | 62.5 kHz | 4/8 | 22 dBm | Maximum range, slow |
+| Fast | 7 | 250 kHz | 4/5 | 14 dBm | Short range, fast |
 
 All parameters are individually configurable. Changes apply immediately.
 
