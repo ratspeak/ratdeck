@@ -27,6 +27,7 @@ public:
     int messageCount(const std::string& peerHex) const;
     bool deleteConversation(const std::string& peerHex);
     void markConversationRead(const std::string& peerHex);
+    bool updateMessageStatus(const std::string& peerHex, double timestamp, bool incoming, LXMFStatus newStatus);
 
     const ConversationSummary* getSummary(const std::string& peerHex) const;
     int totalUnreadCount() const;

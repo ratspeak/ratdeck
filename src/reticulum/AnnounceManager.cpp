@@ -124,6 +124,16 @@ void AnnounceManager::received_announce(
     // Filter out own announces
     if (_localDestHash.size() > 0 && destination_hash == _localDestHash) return;
 
+    // Layer 3: Global announce rate limit — cap application-layer processing
+    {
+        unsigned long now = millis();
+        if (now - _globalAnnounceWindowStart >= 1000) {
+            _globalAnnounceWindowStart = now;
+            _globalAnnounceCount = 0;
+        }
+        if (++_globalAnnounceCount > MAX_GLOBAL_ANNOUNCES_PER_SEC) return;
+    }
+
     std::string destHex = destination_hash.toHex();
     Serial.printf("[ANNOUNCE] From: %s name=\"%s\"\n", destHex.c_str(), name.c_str());
 

@@ -530,6 +530,74 @@ void MessageStore::markConversationRead(const std::string& peerHex) {
     _summaries[peerHex].unreadCount = 0;
 }
 
+bool MessageStore::updateMessageStatus(const std::string& peerHex, double timestamp, bool incoming, LXMFStatus newStatus) {
+    char suffix = incoming ? 'i' : 'o';
+
+    auto updateInDir = [&](auto openFn, auto readFn, auto writeFn, const String& dir) -> bool {
+        File d = openFn(dir.c_str());
+        if (!d || !d.isDirectory()) return false;
+
+        // Collect matching files (by direction suffix)
+        std::vector<String> candidates;
+        File entry = d.openNextFile();
+        while (entry) {
+            if (!entry.isDirectory() && isJsonFile(entry.name())) {
+                String name = entry.name();
+                int len = name.length();
+                if (len >= 7 && name[len - 6] == suffix) {
+                    candidates.push_back(name);
+                }
+            }
+            entry = d.openNextFile();
+        }
+
+        // Search newest-first for the matching timestamp
+        std::sort(candidates.begin(), candidates.end(), [](const String& a, const String& b) { return a > b; });
+
+        for (const auto& fname : candidates) {
+            String path = dir + "/" + fname;
+            String json = readFn(path.c_str());
+            if (json.length() == 0) continue;
+
+            JsonDocument doc;
+            if (deserializeJson(doc, json)) continue;
+
+            double ts = doc["ts"] | 0.0;
+            if (ts == timestamp) {
+                doc["status"] = (int)newStatus;
+                String updated;
+                serializeJson(doc, updated);
+                writeFn(path.c_str(), updated);
+                return true;
+            }
+        }
+        return false;
+    };
+
+    bool updated = false;
+
+    if (_sd && _sd->isReady()) {
+        String sdDir = sdConversationDir(peerHex);
+        updated = updateInDir(
+            [&](const char* p) { return _sd->openDir(p); },
+            [&](const char* p) { return _sd->readString(p); },
+            [&](const char* p, const String& d) { _sd->writeString(p, d); },
+            sdDir);
+    }
+
+    if (_flash) {
+        String dir = conversationDir(peerHex);
+        bool flashUpdated = updateInDir(
+            [](const char* p) { return LittleFS.open(p); },
+            [this](const char* p) { return _flash->readString(p); },
+            [this](const char* p, const String& d) { _flash->writeString(p, d); },
+            dir);
+        updated = updated || flashUpdated;
+    }
+
+    return updated;
+}
+
 void MessageStore::buildSummaries() {
     _summaries.clear();
 

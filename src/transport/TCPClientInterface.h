@@ -45,6 +45,7 @@ private:
     static constexpr uint8_t FRAME_ESC   = 0x7D;
     static constexpr uint8_t FRAME_XOR   = 0x20;
     static constexpr unsigned long TCP_KEEPALIVE_TIMEOUT_MS = 300000; // 5 min
+    static constexpr unsigned long TCP_LOOP_BUDGET_MS = 15;
 
 public:
     unsigned long lastRxTime() const { return _lastRxTime; }

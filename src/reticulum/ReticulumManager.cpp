@@ -105,6 +105,18 @@ bool ReticulumManager::begin(SX1262* radio, FlashStore* flash) {
     _reticulum.start();
     Serial.printf("[RNS] Reticulum started (%s)\n", _transportEnabled ? "Transport Node" : "Endpoint");
 
+    // Layer 1: Transport-level announce rate limiter — filters BEFORE Ed25519 verify
+    RNS::Transport::set_filter_packet_callback([](const RNS::Packet& packet) -> bool {
+        if (packet.packet_type() == RNS::Type::Packet::ANNOUNCE) {
+            static unsigned long windowStart = 0;
+            static unsigned int count = 0;
+            unsigned long now = millis();
+            if (now - windowStart >= 1000) { windowStart = now; count = 0; }
+            if (++count > RATDECK_MAX_ANNOUNCES_PER_SEC) return false;
+        }
+        return true;
+    });
+
     // Load persisted known destinations so Identity::recall() works
     // immediately after reboot for previously-seen nodes.
     RNS::Identity::load_known_destinations();

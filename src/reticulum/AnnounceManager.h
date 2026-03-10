@@ -65,6 +65,9 @@ private:
     unsigned long _lastContactSave = 0;
     unsigned long _lastAnnounceProcessed = 0;
     std::map<std::string, std::string> _nameCache;  // hexHash → displayName
+    unsigned long _globalAnnounceWindowStart = 0;
+    unsigned int _globalAnnounceCount = 0;
+    static constexpr unsigned int MAX_GLOBAL_ANNOUNCES_PER_SEC = 3;
     static constexpr int MAX_NODES = 30;
     static constexpr unsigned long CONTACT_SAVE_INTERVAL_MS = 30000;
     static constexpr unsigned long ANNOUNCE_MIN_INTERVAL_MS = 200;  // Rate-limit announce processing

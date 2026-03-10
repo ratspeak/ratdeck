@@ -28,9 +28,14 @@ void LXMFManager::loop() {
         Serial.printf("[LXMF] Queue drain: status=%s dest=%s\n",
                       msg.statusStr(), msg.destHash.toHex().substr(0, 8).c_str());
 
+        // Persist updated status to disk so reloads don't revert to QUEUED
+        std::string peerHex = msg.destHash.toHex();
+        if (_store) {
+            _store->updateMessageStatus(peerHex, msg.timestamp, false, msg.status);
+        }
+
         // Fire status callback so UI can refresh
         if (_statusCb) {
-            std::string peerHex = msg.destHash.toHex();
             _statusCb(peerHex, msg.timestamp, msg.status);
         }
         _outQueue.pop_front();

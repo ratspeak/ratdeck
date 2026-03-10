@@ -46,9 +46,12 @@ void LvNodesScreen::onEnter() {
 
 void LvNodesScreen::refreshUI() {
     if (!_am) return;
+    unsigned long now = millis();
+    if (now - _lastRebuild < REBUILD_INTERVAL_MS) return;
     int contacts = 0;
     for (const auto& n : _am->nodes()) { if (n.saved) contacts++; }
     if (_am->nodeCount() != _lastNodeCount || contacts != _lastContactCount) {
+        _lastRebuild = now;
         rebuildList();
     }
 }

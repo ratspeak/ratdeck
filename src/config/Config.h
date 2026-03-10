@@ -6,8 +6,8 @@
 
 #define RATDECK_VERSION_MAJOR  1
 #define RATDECK_VERSION_MINOR  5
-#define RATDECK_VERSION_PATCH  6
-#define RATDECK_VERSION_STRING "1.5.6"
+#define RATDECK_VERSION_PATCH  7
+#define RATDECK_VERSION_STRING "1.5.7"
 
 // --- Feature Flags ---
 #define HAS_DISPLAY     true
@@ -45,6 +45,9 @@
 #define TCP_DEFAULT_PORT            4242
 #define TCP_RECONNECT_INTERVAL_MS   15000
 #define TCP_CONNECT_TIMEOUT_MS      5000
+
+// --- Announce Flood Defense ---
+#define RATDECK_MAX_ANNOUNCES_PER_SEC 5     // Transport-level rate limit (before Ed25519 verify)
 
 // --- Limits ---
 #define RATDECK_MAX_NODES             200   // PSRAM allows more
