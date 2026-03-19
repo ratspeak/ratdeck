@@ -3,6 +3,8 @@
 #include "config/Config.h"
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <map>
+#include <string>
 
 bool LittleFSFileSystem::init() { return true; }
 bool LittleFSFileSystem::file_exists(const char* p) { return LittleFS.exists(p); }
@@ -98,15 +100,38 @@ bool ReticulumManager::begin(SX1262* radio, FlashStore* flash) {
     _reticulum.start();
     Serial.println("[RNS] Reticulum started (Endpoint)");
 
-    // Layer 1: Transport-level announce rate limiter — filters BEFORE Ed25519 verify
+    // Layer 1: Transport-level announce filter — runs BEFORE Ed25519 verify
     RNS::Transport::set_filter_packet_callback([](const RNS::Packet& packet) -> bool {
-        if (packet.packet_type() == RNS::Type::Packet::ANNOUNCE) {
-            static unsigned long windowStart = 0;
-            static unsigned int count = 0;
-            unsigned long now = millis();
-            if (now - windowStart >= 1000) { windowStart = now; count = 0; }
-            if (++count > RATDECK_MAX_ANNOUNCES_PER_SEC) return false;
+        if (packet.packet_type() != RNS::Type::Packet::ANNOUNCE) return true;
+
+        unsigned long now = millis();
+
+        // Rate limit window (per-second)
+        static unsigned long windowStart = 0;
+        static unsigned int count = 0;
+        if (now - windowStart >= 1000) { windowStart = now; count = 0; }
+
+        // Adaptive rate: tighter during first 60s boot flood, then normal
+        unsigned int maxRate = (now < 60000) ? 3 : RATDECK_MAX_ANNOUNCES_PER_SEC;
+        if (++count > maxRate) return false;
+
+        // Skip re-validation of known paths (saves ~100ms Ed25519 per announce)
+        // Allow through if hop count improved, or once per 5 min for name/ratchet updates
+        if (RNS::Transport::has_path(packet.destination_hash())) {
+            static std::map<std::string, unsigned long> lastRevalidate;
+            std::string destHex = packet.destination_hash().toHex();
+
+            uint8_t existingHops = RNS::Transport::hops_to(packet.destination_hash());
+            if (packet.hops() < existingHops) return true;  // Better path, allow
+
+            auto it = lastRevalidate.find(destHex);
+            if (it != lastRevalidate.end() && (now - it->second) < 300000) return false;
+            lastRevalidate[destHex] = now;
+
+            // Cap map size to prevent unbounded growth
+            if (lastRevalidate.size() > 300) lastRevalidate.clear();
         }
+
         return true;
     });
 

@@ -895,12 +895,15 @@ void loop() {
     }
 
     // 4. Reticulum loop (radio RX via LoRaInterface) — throttle to ~100Hz
+    unsigned long rnsDuration = 0;
     {
         static unsigned long lastRNS = 0;
         unsigned long now = millis();
         if (now - lastRNS >= 10) {
             lastRNS = now;
+            unsigned long rnsStart = millis();
             rns.loop();
+            rnsDuration = millis() - rnsStart;
         }
     }
 
@@ -973,14 +976,17 @@ void loop() {
         }
     }
 
-    // 8. WiFi + TCP loops (with global budget)
-    if (wifiImpl) wifiImpl->loop();
+    // 8. WiFi + TCP loops (with global budget) — skip if RNS was overloaded
     {
-        unsigned long tcpBudgetStart = millis();
-        for (auto* tcp : tcpClients) {
-            if (millis() - tcpBudgetStart >= TCP_GLOBAL_BUDGET_MS) break;
-            tcp->loop();
-            yield();
+        bool skipTcp = (rnsDuration > 200);
+        if (!skipTcp && wifiImpl) wifiImpl->loop();
+        if (!skipTcp) {
+            unsigned long tcpBudgetStart = millis();
+            for (auto* tcp : tcpClients) {
+                if (millis() - tcpBudgetStart >= TCP_GLOBAL_BUDGET_MS) break;
+                tcp->loop();
+                yield();
+            }
         }
     }
 

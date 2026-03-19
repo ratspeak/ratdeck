@@ -47,7 +47,7 @@
 #define TCP_CONNECT_TIMEOUT_MS      5000
 
 // --- Announce Flood Defense ---
-#define RATDECK_MAX_ANNOUNCES_PER_SEC 8     // Transport-level rate limit (before Ed25519 verify)
+#define RATDECK_MAX_ANNOUNCES_PER_SEC 5     // Transport-level rate limit (before Ed25519 verify)
 
 // --- Limits ---
 #define RATDECK_MAX_NODES             200   // PSRAM allows more
