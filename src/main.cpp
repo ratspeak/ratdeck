@@ -795,14 +795,9 @@ void setup() {
     });
 
     if (userConfig.settings().displayName.isEmpty()) {
-        // First boot — check if SD has old data that should be cleaned
-        if (sdStore.isReady() && sdStore.hasExistingData()) {
-            ui.setLvScreen(&lvDataCleanScreen);
-            Serial.println("[BOOT] Old SD data found, showing data clean screen");
-        } else {
-            ui.setLvScreen(&lvNameInputScreen);
-            Serial.println("[BOOT] Showing name input screen");
-        }
+        // First boot — go to name input (SD data is handled gracefully by dual-backend)
+        ui.setLvScreen(&lvNameInputScreen);
+        Serial.println("[BOOT] Showing name input screen");
     } else {
         // Name already set — go straight to home
         ui.setBootMode(false);

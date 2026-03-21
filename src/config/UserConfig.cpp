@@ -53,7 +53,7 @@ bool UserConfig::parseJson(const String& json) {
     _settings.denseFontMode    = doc["dense_font"] | false;
     _settings.trackballSpeed   = doc["trackball_speed"] | 3;
     _settings.touchSensitivity = doc["touch_sens"] | 3;
-    _settings.bleEnabled       = doc["ble_enabled"] | true;
+    _settings.bleEnabled       = doc["ble_enabled"] | false;
 
     _settings.audioEnabled = doc["audio_on"]  | true;
     _settings.audioVolume  = doc["audio_vol"] | 80;

@@ -48,7 +48,7 @@ struct UserSettings {
     uint8_t touchSensitivity = 3;     // 1-5
 
     // BLE
-    bool bleEnabled = true;
+    bool bleEnabled = false;
 
     // Audio
     bool audioEnabled = true;
