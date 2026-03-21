@@ -114,7 +114,6 @@ bool wifiSTAStarted = false;
 bool wifiSTAConnected = false;
 unsigned long lastAutoAnnounce = 0;
 unsigned long lastStatusUpdate = 0;
-constexpr unsigned long ANNOUNCE_INTERVAL_MS = 5 * 60 * 1000;  // 5 minutes
 constexpr unsigned long STATUS_UPDATE_MS = 1000;                // 1 Hz status bar update
 unsigned long lastHeartbeat = 0;
 constexpr unsigned long HEARTBEAT_INTERVAL_MS = 5000;
@@ -902,8 +901,9 @@ void loop() {
         }
     }
 
-    // 5. Auto-announce every 5 minutes
-    if (bootComplete && millis() - lastAutoAnnounce >= ANNOUNCE_INTERVAL_MS) {
+    // 5. Auto-announce every 5-360 minutes (user configured)
+    const unsigned long announceInterval = (unsigned long)userConfig.settings().announceInterval * 60000; // m -> ms
+    if (bootComplete && millis() - lastAutoAnnounce >= announceInterval) {
         lastAutoAnnounce = millis();
         if (rns.loraInterface() && rns.loraInterface()->airtimeUtilization() > LoRaInterface::AIRTIME_THROTTLE) {
             Serial.println("[AUTO] Skipping announce: LoRa airtime > 25%");

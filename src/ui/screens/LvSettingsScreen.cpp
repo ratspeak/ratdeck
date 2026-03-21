@@ -165,6 +165,10 @@ void LvSettingsScreen::buildItems() {
         _items.push_back(newId);
         idx++;
     }
+    _items.push_back({"Announce Interval", SettingType::INTEGER,
+        [&s]() { return s.announceInterval; }, [&s](int v) { s.announceInterval = v; },
+        [](int v) { return String(v) + "m"; }, 5, 60 * 6, 5}); // 5m - 6h
+    idx++;
     {
         SettingItem devModeItem;
         devModeItem.label = "Developer Mode";

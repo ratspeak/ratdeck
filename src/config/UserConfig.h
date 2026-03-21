@@ -57,6 +57,9 @@ struct UserSettings {
     // Identity
     String displayName;
 
+    // Announce
+    uint16_t announceInterval = 5; // minutes, 5-360
+
     // Developer mode — unlocks custom radio parameters
     bool devMode = false;
 };
