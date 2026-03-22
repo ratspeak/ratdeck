@@ -63,25 +63,25 @@ bool TouchInput::readGT911() {
         return false;
     }
 
-    // Read first touch point (0x8150-0x8157)
+    // Read first touch point (0x814F-0x8155)
     Wire.beginTransmission(_i2cAddress);
     Wire.write(0x81);
-    Wire.write(0x50);
+    Wire.write(0x4F);
     if (Wire.endTransmission() != 0) {
         _touched = false;
         return false;
     }
 
-    Wire.requestFrom(_i2cAddress, (uint8_t)6);
-    if (Wire.available() < 6) {
+    Wire.requestFrom(_i2cAddress, (uint8_t)7);
+    if (Wire.available() < 7) {
         _touched = false;
         return false;
     }
 
-    Wire.read(); // track ID
+    uint8_t trackId = Wire.read();
     _x = Wire.read() | (Wire.read() << 8);
     _y = Wire.read() | (Wire.read() << 8);
-    Wire.read(); // size (unused)
+    Wire.read() | (Wire.read() << 8); // size (unused)
 
     _touched = true;
 
@@ -91,6 +91,10 @@ bool TouchInput::readGT911() {
     Wire.write(0x4E);
     Wire.write(0x00);
     Wire.endTransmission();
+
+    // TODO: remove
+    Serial.write("[TOUCH] id "); Serial.print(trackId); Serial.write(" @ ");
+    Serial.print(_x); Serial.write(' '); Serial.println(_y);
 
     return true;
 }
