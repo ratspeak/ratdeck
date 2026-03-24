@@ -242,13 +242,29 @@ void LvSettingsScreen::buildItems() {
     // Custom radio parameters — only visible in Developer Mode
     if (s.devMode) {
         _items.push_back({"Frequency", SettingType::INTEGER,
-            [&s]() { return (int)(s.loraFrequency / 1000); },
-            [&s](int v) { s.loraFrequency = (uint32_t)v * 1000; },
+            [&s]() { return (int)(s.loraFrequency); },
+            [&s](int v) {
+                if ( v < 1000) {
+                    s.loraFrequency = (uint32_t)v * 1000000;
+                } else if (v < 1000000) {
+                    s.loraFrequency = (uint32_t)v * 1000;
+                } else {
+                    s.loraFrequency = (uint32_t)v;
+                }
+            },
             [](int v) -> String {
-                char buf[16]; snprintf(buf, sizeof(buf), "%d.%03d MHz", v / 1000, v % 1000);
+                char buf[16];
+
+                if (v < 1000) {
+                    snprintf(buf, sizeof(buf), "%d MHz", v);
+                } else if (v < 1000000) {
+                    snprintf(buf, sizeof(buf), "%d.%03d KHz", v / 1000, v % 1000);
+                } else {
+                    snprintf(buf, sizeof(buf), "%d.%03d.%03d Hz", v / 1000000, (v / 1000) % 1000, v % 1000);
+                }
                 return String(buf);
             },
-            137000, 1020000, 125});
+            137, 1020000000, 125000});
         idx++;
         _items.push_back({"TX Power", SettingType::INTEGER,
             [&s]() { return s.loraTxPower; }, [&s](int v) { s.loraTxPower = v; },
