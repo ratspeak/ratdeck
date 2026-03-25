@@ -141,20 +141,18 @@ RNS::Bytes encodeAnnounceName(const String& name) {
     return RNS::Bytes(buf, 3 + len);
 }
 
-static void announceWithName() {
+static void announceWithName(bool silent = false) {
     RNS::Bytes appData = encodeAnnounceName(userConfig.settings().displayName);
-    Serial.printf("[ANNOUNCE-TX] name=\"%s\" appData=%d bytes\n",
-        userConfig.settings().displayName.c_str(), (int)appData.size());
-    if (appData.size() > 0) {
-        Serial.printf("[ANNOUNCE-TX] hex: ");
-        for (size_t i = 0; i < appData.size() && i < 20; i++) Serial.printf("%02X", appData.data()[i]);
-        Serial.println();
-    }
+    Serial.printf("[ANNOUNCE-TX] name=\"%s\" appData=%d bytes silent=%s\n",
+        userConfig.settings().displayName.c_str(), (int)appData.size(),
+        silent ? "yes" : "no");
     rns.announce(appData);
-    ui.statusBar().flashAnnounce();
-    ui.statusBar().showToast("Announce sent!");
-    ui.lvStatusBar().flashAnnounce();
-    ui.lvStatusBar().showToast("Announce sent!");
+    if (!silent) {
+        ui.statusBar().flashAnnounce();
+        ui.statusBar().showToast("Announce sent!");
+        ui.lvStatusBar().flashAnnounce();
+        ui.lvStatusBar().showToast("Announce sent!");
+    }
 }
 
 // =============================================================================
@@ -909,7 +907,7 @@ void loop() {
         if (rns.loraInterface() && rns.loraInterface()->airtimeUtilization() > LoRaInterface::AIRTIME_THROTTLE) {
             Serial.println("[AUTO] Skipping announce: LoRa airtime > 25%");
         } else {
-            announceWithName();
+            announceWithName(!powerMgr.isScreenOn());
             Serial.println("[AUTO] Periodic announce");
         }
     }
@@ -961,7 +959,7 @@ void loop() {
         }
         if (anyTcpConnected) {
             Serial.println("[TCP] Sending announce over new TCP connection...");
-            announceWithName();
+            announceWithName(!powerMgr.isScreenOn());
             lastAutoAnnounce = millis();
         } else {
             Serial.println("[TCP] No TCP clients connected, skipping announce");
