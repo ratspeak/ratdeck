@@ -57,7 +57,8 @@ bool UserConfig::parseJson(const String& json) {
 
     _settings.gpsTimeEnabled     = doc["gps_time"]     | true;
     _settings.gpsLocationEnabled = doc["gps_location"] | false;
-    _settings.utcOffset          = doc["utc_offset"]   | (int)-5;
+    _settings.timezoneIdx        = doc["tz_idx"]       | 6;
+    _settings.timezoneSet        = doc["tz_set"]       | false;
     _settings.use24HourTime      = doc["time_24h"]     | false;
 
     _settings.audioEnabled = doc["audio_on"]  | true;
@@ -105,7 +106,8 @@ String UserConfig::serializeToJson() const {
 
     doc["gps_time"]     = _settings.gpsTimeEnabled;
     doc["gps_location"] = _settings.gpsLocationEnabled;
-    doc["utc_offset"]   = _settings.utcOffset;
+    doc["tz_idx"]       = _settings.timezoneIdx;
+    doc["tz_set"]       = _settings.timezoneSet;
     doc["time_24h"]     = _settings.use24HourTime;
 
     doc["audio_on"]  = _settings.audioEnabled;

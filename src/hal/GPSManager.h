@@ -36,7 +36,7 @@ public:
     bool isRunning() const { return _running; }
 
     // Configuration (set from outside before or after begin())
-    void setUTCOffset(int8_t offset) { _utcOffset = offset; }
+    void setPosixTZ(const char* tz);
     void setLocationEnabled(bool enable) { _parser.setParseLocation(enable); }
 
 private:
@@ -54,16 +54,16 @@ private:
     unsigned long _lastFixMs = 0;
     unsigned long _lastPersistMs = 0;
     uint32_t _timeSyncCount = 0;
-    int8_t _utcOffset = -5;
+    char _posixTZ[48] = "EST5EDT,M3.2.0,M11.1.0";  // POSIX TZ string
     uint32_t _detectedBaud = 0;
 
     // Baud auto-detect state
     bool _baudDetected = false;
     int _baudAttemptIdx = 0;
     unsigned long _baudAttemptStart = 0;
-    static constexpr uint32_t BAUD_RATES[] = {115200, 38400, 9600};
+    static constexpr uint32_t BAUD_RATES[] = {38400, 115200, 9600};
     static constexpr int BAUD_RATE_COUNT = 3;
-    static constexpr unsigned long BAUD_DETECT_TIMEOUT_MS = 10000;
+    static constexpr unsigned long BAUD_DETECT_TIMEOUT_MS = 3000;
 
     static constexpr unsigned long TIME_SYNC_INTERVAL_MS = 60000;   // Re-sync every 60s
     static constexpr unsigned long PERSIST_INTERVAL_MS = 300000;     // Persist to NVS every 5 min

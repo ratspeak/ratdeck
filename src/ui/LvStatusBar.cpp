@@ -32,13 +32,6 @@ void LvStatusBar::create(lv_obj_t* parent) {
     lv_label_set_text(_lblBrand, "Ratspeak.org");
     lv_obj_align(_lblBrand, LV_ALIGN_CENTER, 0, 0);
 
-    // Right: GPS indicator (left of battery, hidden until fix)
-    _lblGPS = lv_label_create(_bar);
-    lv_obj_set_style_text_font(_lblGPS, font, 0);
-    lv_obj_set_style_text_color(_lblGPS, lv_color_hex(Theme::PRIMARY), 0);
-    lv_label_set_text(_lblGPS, "");
-    lv_obj_align(_lblGPS, LV_ALIGN_RIGHT_MID, -42, 0);
-
     // Right: Battery %
     _lblBatt = lv_label_create(_bar);
     lv_obj_set_style_text_font(_lblBatt, font, 0);
@@ -104,11 +97,7 @@ void LvStatusBar::updateTime() {
 }
 
 void LvStatusBar::setGPSFix(bool hasFix) {
-    if (_gpsFix == hasFix) return;
     _gpsFix = hasFix;
-    if (_lblGPS) {
-        lv_label_set_text(_lblGPS, hasFix ? "GPS" : "");
-    }
 }
 
 void LvStatusBar::setBatteryPercent(int pct) {

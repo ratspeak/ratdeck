@@ -3,6 +3,7 @@
 #include "ui/LvTheme.h"
 #include "config/Config.h"
 #include "config/UserConfig.h"
+#include "ui/screens/LvTimezoneScreen.h"  // For TIMEZONE_TABLE
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "radio/SX1262.h"
@@ -382,10 +383,14 @@ void LvSettingsScreen::buildItems() {
         [](int v) { return v ? String("ON") : String("OFF"); }});
     idx++;
 #endif
-    _items.push_back({"UTC Offset", SettingType::INTEGER,
-        [&s]() { return (int)s.utcOffset; }, [&s](int v) { s.utcOffset = (int8_t)v; },
-        [](int v) { char buf[8]; snprintf(buf, sizeof(buf), "UTC%+d", v); return String(buf); },
-        -12, 14, 1});
+    _items.push_back({"Timezone", SettingType::INTEGER,
+        [&s]() { return (int)s.timezoneIdx; },
+        [&s](int v) { s.timezoneIdx = (uint8_t)v; s.timezoneSet = true; },
+        [](int v) {
+            if (v >= 0 && v < TIMEZONE_COUNT) return String(TIMEZONE_TABLE[v].label);
+            return String("Unknown");
+        },
+        0, TIMEZONE_COUNT - 1, 1});
     idx++;
     _items.push_back({"24h Time", SettingType::TOGGLE,
         [&s]() { return s.use24HourTime ? 1 : 0; },
@@ -394,9 +399,9 @@ void LvSettingsScreen::buildItems() {
     idx++;
     _categories.push_back({"GPS/Time", gpsStart, idx - gpsStart,
         [&s]() {
-            char buf[16];
-            snprintf(buf, sizeof(buf), "UTC%+d", s.utcOffset);
-            return String(buf);
+            if (s.timezoneIdx < TIMEZONE_COUNT)
+                return String(TIMEZONE_TABLE[s.timezoneIdx].label);
+            return String("Not set");
         }});
 
     // Audio
@@ -540,7 +545,7 @@ void LvSettingsScreen::buildItems() {
             if (_sd && _sd->isReady()) _sd->wipeRatputer();
             if (_flash) _flash->format();
             nvs_flash_erase();
-            delay(500);
+            delay(1500);  // Long enough for key state to clear before reboot
             ESP.restart();
         };
         _items.push_back(factoryReset);

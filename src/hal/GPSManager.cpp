@@ -65,9 +65,15 @@ void GPSManager::loop() {
     NMEAData& d = _parser.data();
     if (d.timeUpdated) {
         d.timeUpdated = false;
-        _lastFixMs = millis();
-        if (d.timeValid && (millis() - _lastTimeSyncMs >= TIME_SYNC_INTERVAL_MS || _timeSyncCount == 0)) {
+        // Only trust GPS time when we have actual satellite lock (sats > 0).
+        // With sats=0 the module returns cached RTC time which drifts.
+        bool hasSatFix = (d.satellites > 0);
+        if (hasSatFix) _lastFixMs = millis();
+        if (d.timeValid && hasSatFix && (millis() - _lastTimeSyncMs >= TIME_SYNC_INTERVAL_MS || _timeSyncCount == 0)) {
             syncSystemTime();
+            // Persist time to NVS so reboots without WiFi/GPS have approximate time
+            persistToNVS();
+            _lastPersistMs = millis();
         }
     }
 
@@ -76,12 +82,6 @@ void GPSManager::loop() {
         d.locationUpdated = false;
         _locationValid = d.locationValid;
         _lastFixMs = millis();
-
-        // Periodic NVS persist
-        if (_locationValid && (millis() - _lastPersistMs >= PERSIST_INTERVAL_MS)) {
-            persistToNVS();
-            _lastPersistMs = millis();
-        }
     }
 
     // Stale fix detection
@@ -150,12 +150,8 @@ void GPSManager::syncSystemTime() {
     _lastTimeSyncMs = millis();
     _timeSyncCount++;
 
-    // Set TZ from utcOffset so localtime() works correctly
-    // POSIX TZ: "UTC<offset>" where offset sign is inverted
-    // e.g., UTC-5 (EST) → "UTC5" in POSIX notation
-    char tz[16];
-    snprintf(tz, sizeof(tz), "UTC%d", -_utcOffset);
-    setenv("TZ", tz, 1);
+    // Set TZ so localtime() returns correct local time (with DST if applicable)
+    setenv("TZ", _posixTZ, 1);
     tzset();
 
     Serial.printf("[GPS] System time synced: %04d-%02d-%02d %02d:%02d:%02d UTC (sync #%lu)\n",
@@ -177,9 +173,7 @@ void GPSManager::restoreTimeFromNVS() {
         settimeofday(&tv, nullptr);
 
         // Set TZ
-        char tz[16];
-        snprintf(tz, sizeof(tz), "UTC%d", -_utcOffset);
-        setenv("TZ", tz, 1);
+        setenv("TZ", _posixTZ, 1);
         tzset();
 
         time_t now = time(nullptr);
@@ -213,6 +207,11 @@ void GPSManager::persistToNVS() {
     }
 
     prefs.end();
+}
+
+void GPSManager::setPosixTZ(const char* tz) {
+    strncpy(_posixTZ, tz, sizeof(_posixTZ) - 1);
+    _posixTZ[sizeof(_posixTZ) - 1] = '\0';
 }
 
 #endif // HAS_GPS

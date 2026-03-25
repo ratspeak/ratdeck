@@ -53,7 +53,8 @@ struct UserSettings {
     // GPS & Time
     bool gpsTimeEnabled = true;      // GPS time sync (default ON)
     bool gpsLocationEnabled = false; // GPS position tracking (default OFF, user must opt in)
-    int8_t utcOffset = -5;           // Hours from UTC (default EST)
+    uint8_t timezoneIdx = 6;         // Index into TIMEZONE_TABLE (default: New York EST/EDT)
+    bool timezoneSet = false;        // false = show timezone picker at boot
     bool use24HourTime = false;      // false = 12h (no AM/PM), true = 24h
 
     // Audio

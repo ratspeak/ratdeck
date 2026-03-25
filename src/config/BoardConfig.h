@@ -68,7 +68,7 @@
 // --- GPS (UBlox MIA-M10Q UART) ---
 #define GPS_TX              43   // ESP TX -> GPS RX
 #define GPS_RX              44   // GPS TX -> ESP RX
-#define GPS_BAUD            115200
+#define GPS_BAUD            38400   // UBlox MIA-M10Q factory default
 
 // --- Battery ADC ---
 #define BAT_ADC_PIN          4

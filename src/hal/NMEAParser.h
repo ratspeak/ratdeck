@@ -217,22 +217,18 @@ private:
     // $xxGGA — Global Positioning System Fix Data
     // fields: type,time,lat,N/S,lon,E/W,quality,sats,hdop,alt,M,geoid,M,age,station
     bool parseGGA(char* fields[], int n) {
-        if (!_parseLocation) return true;  // Skip entirely when location disabled
-
-        // Fix quality
+        // Always parse fix quality and satellites (needed for time validation)
         _data.fixQuality = atoi(fields[6]);
-
-        // Satellites
         _data.satellites = atoi(fields[7]);
 
-        // HDOP
-        if (strlen(fields[8]) > 0) {
-            _data.hdop = atof(fields[8]);
-        }
-
-        // Altitude above MSL
-        if (n >= 10 && strlen(fields[9]) > 0) {
-            _data.altitude = atof(fields[9]);
+        // Only parse position fields if location tracking is enabled
+        if (_parseLocation) {
+            if (strlen(fields[8]) > 0) {
+                _data.hdop = atof(fields[8]);
+            }
+            if (n >= 10 && strlen(fields[9]) > 0) {
+                _data.altitude = atof(fields[9]);
+            }
         }
 
         return true;

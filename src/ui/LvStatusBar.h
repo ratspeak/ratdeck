@@ -31,7 +31,6 @@ private:
     lv_obj_t* _bar = nullptr;
     lv_obj_t* _lblTime = nullptr;    // Top-left: current time
     lv_obj_t* _lblBrand = nullptr;   // Center: "Ratspeak.org"
-    lv_obj_t* _lblGPS = nullptr;     // Right: GPS indicator
     lv_obj_t* _lblBatt = nullptr;    // Right: battery %
     lv_obj_t* _toast = nullptr;
     lv_obj_t* _lblToast = nullptr;

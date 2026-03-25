@@ -60,6 +60,8 @@ bool LvNameInputScreen::handleKey(const KeyEvent& event) {
     if (!_textarea) return false;
 
     if (event.enter || event.character == '\n' || event.character == '\r') {
+        // Guard: ignore Enter for first 600ms to prevent stale keypress from factory reset
+        if (millis() - _enterTime < ENTER_GUARD_MS) return true;
         const char* text = lv_textarea_get_text(_textarea);
         if (_doneCb) {
             _doneCb(String(text && strlen(text) > 0 ? text : ""));

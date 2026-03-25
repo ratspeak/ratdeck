@@ -34,6 +34,7 @@
 #include "ui/screens/LvHelpOverlay.h"
 // Map screen removed
 #include "ui/screens/LvNameInputScreen.h"
+#include "ui/screens/LvTimezoneScreen.h"
 #include "ui/screens/LvDataCleanScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
@@ -107,6 +108,7 @@ LvSettingsScreen lvSettingsScreen;
 LvHelpOverlay lvHelpOverlay;
 // LvMapScreen removed
 LvNameInputScreen lvNameInputScreen;
+LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
 
 // Tab-screen mapping (4 tabs) — LVGL versions
@@ -130,6 +132,16 @@ constexpr unsigned long LVGL_INTERVAL_MS = 33;          // ~30 FPS
 constexpr unsigned long TCP_GLOBAL_BUDGET_MS = 35;      // Max cumulative TCP time per loop
 bool wifiDeferredAnnounce = false;
 unsigned long wifiConnectedAt = 0;
+
+// =============================================================================
+// Timezone helper — returns POSIX TZ string for current config
+// =============================================================================
+
+static const char* currentPosixTZ() {
+    uint8_t idx = userConfig.settings().timezoneIdx;
+    if (idx < TIMEZONE_COUNT) return TIMEZONE_TABLE[idx].posixTZ;
+    return "EST5EDT,M3.2.0,M11.1.0";  // Fallback
+}
 
 // =============================================================================
 // Announce with display name (MessagePack-encoded app_data)
@@ -646,7 +658,7 @@ void setup() {
 #if HAS_GPS
     if (userConfig.settings().gpsTimeEnabled) {
         lvBootScreen.setProgress(0.93f, "Starting GPS...");
-        gps.setUTCOffset(userConfig.settings().utcOffset);
+        gps.setPosixTZ(currentPosixTZ());
         gps.setLocationEnabled(userConfig.settings().gpsLocationEnabled);
         gps.begin();
         Serial.println("[BOOT] GPS UART started (MIA-M10Q)");
@@ -754,7 +766,7 @@ void setup() {
 #if HAS_GPS
     lvSettingsScreen.setGPSChangeCallback([](bool timeEnabled) {
         if (timeEnabled) {
-            gps.setUTCOffset(userConfig.settings().utcOffset);
+            gps.setPosixTZ(currentPosixTZ());
             gps.setLocationEnabled(userConfig.settings().gpsLocationEnabled);
             gps.begin();
             Serial.println("[GPS] Time enabled via settings");
@@ -797,8 +809,49 @@ void setup() {
         }
     });
 
+    // --- Boot flow helpers ---
+    // Transition to home screen (shared by name input, timezone, and normal boot)
+    auto goHome = []() {
+        ui.setBootMode(false);
+        ui.setLvScreen(&lvHomeScreen);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_HOME);
+        announceWithName();
+        lastAutoAnnounce = millis();
+        Serial.println("[BOOT] Initial announce sent");
+    };
+
+    // Show timezone screen, then go home
+    auto showTimezone = [goHome]() {
+        if (!userConfig.settings().timezoneSet) {
+            lvTimezoneScreen.setSelectedIndex(userConfig.settings().timezoneIdx);
+            ui.setLvScreen(&lvTimezoneScreen);
+            Serial.println("[BOOT] Showing timezone selection");
+        } else {
+            goHome();
+        }
+    };
+
+    // Timezone screen done callback
+    lvTimezoneScreen.setDoneCallback([goHome](int tzIdx) {
+        userConfig.settings().timezoneIdx = (uint8_t)tzIdx;
+        userConfig.settings().timezoneSet = true;
+        userConfig.save(sdStore, flash);
+        Serial.printf("[BOOT] Timezone set: %s (%s)\n",
+            TIMEZONE_TABLE[tzIdx].label, TIMEZONE_TABLE[tzIdx].posixTZ);
+        // Apply timezone immediately
+        const char* tz = TIMEZONE_TABLE[tzIdx].posixTZ;
+        setenv("TZ", tz, 1);
+        tzset();
+#if HAS_GPS
+        if (userConfig.settings().gpsTimeEnabled) {
+            gps.setPosixTZ(tz);
+        }
+#endif
+        goHome();
+    });
+
     // Name input screen (first boot only — when no display name is set)
-    lvNameInputScreen.setDoneCallback([](const String& name) {
+    lvNameInputScreen.setDoneCallback([showTimezone](const String& name) {
         String finalName = name;
         if (finalName.isEmpty()) {
             // Auto-generate: Ratspeak.org-xxx (first 3 chars of LXMF dest hash)
@@ -813,31 +866,22 @@ void setup() {
         }
         Serial.printf("[BOOT] Display name set: '%s'\n", finalName.c_str());
 
-        // Transition to home screen
-        ui.setBootMode(false);
-        ui.setLvScreen(&lvHomeScreen);
-        ui.lvTabBar().setActiveTab(LvTabBar::TAB_HOME);
-
-        // Initial announce with name
-        announceWithName();
-        lastAutoAnnounce = millis();
-        Serial.println("[BOOT] Initial announce sent");
+        // Next step: timezone selection (or home if already set)
+        showTimezone();
     });
 
     if (userConfig.settings().displayName.isEmpty()) {
-        // First boot — go to name input (SD data is handled gracefully by dual-backend)
+        // First boot — go to name input
         ui.setLvScreen(&lvNameInputScreen);
         Serial.println("[BOOT] Showing name input screen");
+    } else if (!userConfig.settings().timezoneSet) {
+        // Name set but timezone not — show timezone picker
+        lvTimezoneScreen.setSelectedIndex(userConfig.settings().timezoneIdx);
+        ui.setLvScreen(&lvTimezoneScreen);
+        Serial.println("[BOOT] Showing timezone selection (name already set)");
     } else {
-        // Name already set — go straight to home
-        ui.setBootMode(false);
-        ui.setLvScreen(&lvHomeScreen);
-        ui.lvTabBar().setActiveTab(LvTabBar::TAB_HOME);
-
-        // Initial announce with name
-        announceWithName();
-        lastAutoAnnounce = millis();
-        Serial.println("[BOOT] Initial announce sent");
+        // Everything configured — go straight to home
+        goHome();
     }
 
     // Clear boot loop counter — we survived!
@@ -956,13 +1000,11 @@ void loop() {
             ui.lvStatusBar().setWiFiActive(true);
             Serial.printf("[WIFI] STA connected: %s\n", WiFi.localIP().toString().c_str());
 
-            // NTP time sync (configurable UTC offset)
+            // NTP time sync (DST-aware POSIX TZ string)
             {
-                int8_t off = userConfig.settings().utcOffset;
-                char tz[16];
-                snprintf(tz, sizeof(tz), "UTC%d", -off);
+                const char* tz = currentPosixTZ();
                 configTzTime(tz, "pool.ntp.org", "time.nist.gov");
-                Serial.printf("[NTP] Time sync started (UTC%+d, TZ=%s)\n", off, tz);
+                Serial.printf("[NTP] Time sync started (TZ=%s)\n", tz);
             }
 
             // Recreate TCP clients on every WiFi connect (old clients may have stale sockets)
