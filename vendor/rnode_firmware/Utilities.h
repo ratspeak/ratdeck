@@ -396,6 +396,14 @@ void hard_reset(void) {
 
 // LED Indication: Error
 void led_indicate_error(int cycles) {
+	#if BOARD_MODEL == BOARD_TDECK
+		// T-Deck has its own display for status, and blocking on delay()
+		// here stalls the KISS command-processing path (serial_poll() ->
+		// serial_callback()) during host config handshakes, which host-side
+		// interfaces (e.g. RNS's RNodeInterface) validate against a tight,
+		// fixed timeout.
+		return;
+	#endif
 	#if HAS_NP == true
 		bool forever = (cycles == 0) ? true : false;
 		cycles = forever ? 1 : cycles;
@@ -451,6 +459,9 @@ void led_indicate_boot_error() {
 
 // LED Indication: Warning
 void led_indicate_warning(int cycles) {
+	#if BOARD_MODEL == BOARD_TDECK
+		return;
+	#endif
 	#if HAS_NP == true
 		bool forever = (cycles == 0) ? true : false;
 		cycles = forever ? 1 : cycles;
@@ -543,6 +554,12 @@ void led_indicate_warning(int cycles) {
 		    if (!forever) cycles--;
 		  }
 		  led_rx_off();
+		}
+	#elif BOARD_MODEL == BOARD_TDECK
+		void led_indicate_info(int cycles) {
+			// T-Deck has its own display for status; skip the blocking
+			// delay()-based blink so it doesn't stall serial_poll() during
+			// host config handshakes (see led_indicate_error/warning above).
 		}
 	#else
 		void led_indicate_info(int cycles) {
@@ -1275,12 +1292,29 @@ void updateBitrate() {
 }
 
 void setSpreadingFactor() {
-	if (radio_online) LoRa->setSpreadingFactor(lora_sf);
+	// Reconnecting hosts (e.g. RNS's RNodeInterface) resend the full radio
+	// config on every (re)connect. Re-applying an unchanged value still
+	// re-runs the modem's full BUSY-gated SPI reconfiguration sequence,
+	// which can block the main loop (and thus all serial processing) for
+	// hundreds of milliseconds. Skip it when nothing has actually changed.
+	static int applied_sf = -1;
+	if (radio_online) {
+		if (applied_sf != lora_sf) {
+			LoRa->setSpreadingFactor(lora_sf);
+			applied_sf = lora_sf;
+		}
+	}
 	updateBitrate();
 }
 
 void setCodingRate() {
-	if (radio_online) LoRa->setCodingRate4(lora_cr);
+	static int applied_cr = -1;
+	if (radio_online) {
+		if (applied_cr != lora_cr) {
+			LoRa->setCodingRate4(lora_cr);
+			applied_cr = lora_cr;
+		}
+	}
 	updateBitrate();
 }
 
@@ -1362,13 +1396,17 @@ int map_modem_output_to_target_power(int modem_output_dbm) {
 }
 
 void setTXPower() {
+	static int applied_mapped_txp = -1;
 	if (radio_online) {
 		int mapped_lora_txp = map_target_power_to_modem_output(lora_txp);
-		
+
 		#if HAS_LORA_PA
 			int real_lora_txp = map_modem_output_to_target_power(mapped_lora_txp);
 			lora_txp = real_lora_txp;
 		#endif
+
+		if (applied_mapped_txp == mapped_lora_txp) return;
+		applied_mapped_txp = mapped_lora_txp;
 
 		if (model == MODEL_11) LoRa->setTxPower(mapped_lora_txp, PA_OUTPUT_RFO_PIN);
 		if (model == MODEL_12) LoRa->setTxPower(mapped_lora_txp, PA_OUTPUT_RFO_PIN);
@@ -1430,8 +1468,12 @@ void getBandwidth() {
 }
 
 void setBandwidth() {
+	static long applied_bw = -1;
 	if (radio_online) {
-		LoRa->setSignalBandwidth(lora_bw);
+		if (applied_bw != lora_bw) {
+			LoRa->setSignalBandwidth(lora_bw);
+			applied_bw = lora_bw;
+		}
 		getBandwidth();
 	}
 }
@@ -1443,8 +1485,12 @@ void getFrequency() {
 }
 
 void setFrequency() {
+	static long applied_freq = -1;
 	if (radio_online) {
-		LoRa->setFrequency(lora_freq);
+		if (applied_freq != lora_freq) {
+			LoRa->setFrequency(lora_freq);
+			applied_freq = lora_freq;
+		}
 		getFrequency();
 	}
 }
