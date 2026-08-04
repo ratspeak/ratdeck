@@ -155,7 +155,15 @@ void BLESerial::onWrite(BLECharacteristic *characteristic) {
 void BLESerial::SetupSerialService() {
   SerialService = ble_server->createService(BLE_SERIAL_SERVICE_UUID);
 
-  RxCharacteristic = SerialService->createCharacteristic(BLE_RX_UUID, BLECharacteristic::PROPERTY_WRITE);
+  // Nordic UART Service convention has the RX (host -> peripheral)
+  // characteristic accept "Write Without Response" for serial-like
+  // throughput. RNS's RNodeInterface BLE client writes with
+  // response=False; without PROPERTY_WRITE_NR here, the peripheral's GATT
+  // stack silently drops those writes (there's no response channel for a
+  // Write Command PDU sent to an attribute that doesn't advertise it), so
+  // the host's write call returns successfully while the byte never
+  // actually reaches onWrite().
+  RxCharacteristic = SerialService->createCharacteristic(BLE_RX_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
   RxCharacteristic->setAccessPermissions(ESP_GATT_PERM_WRITE_ENC_MITM);
   RxCharacteristic->addDescriptor(new BLE2902());
   RxCharacteristic->setWriteProperty(true);
