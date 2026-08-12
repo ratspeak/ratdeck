@@ -13,6 +13,7 @@
 #include "transport/WiFiInterface.h"
 #include "reticulum/ReticulumManager.h"
 #include "reticulum/IdentityManager.h"
+#include "reticulum/AnnounceManager.h"
 #include <Arduino.h>
 #include <esp_system.h>
 #include <nvs_flash.h>
@@ -611,7 +612,7 @@ void LvSettingsScreen::buildItems() {
                 char buf[8]; snprintf(buf, sizeof(buf), "%.2fV", v / 100.0f); return String(buf);
             }, 380, 430, 1});
         idx++;
-        _items.push_back({"Full Voltage", SettingType::INTEGER,
+        _items.push_back({"Full Threshold", SettingType::INTEGER,
             [&s]() { return (int)roundf(s.fullBatteryV * 100); },
             [&s](int v) { s.fullBatteryV = v / 100.0f; },
             [](int v) -> String {
@@ -951,6 +952,65 @@ void LvSettingsScreen::buildItems() {
         [&s](int v) { s.gpsLocationEnabled = (v != 0); },
         [](int v) { return String(onOff(v != 0)); }});
     idx++;
+    // GPS Telemetry (issue #64) — opt-in position sharing to a hub. Off
+    // by default for privacy. The hub hash persists; the manager reads it
+    // fresh on every send so changes apply without a live callback.
+    _items.push_back({"Send Telemetry", SettingType::TOGGLE,
+        [&s]() { return s.gpsTelemetryEnabled ? 1 : 0; },
+        [&s](int v) { s.gpsTelemetryEnabled = (v != 0); },
+        [](int v) { return String(onOff(v != 0)); }});
+    idx++;
+    {
+        // Pick a discovered/saved peer as the telemetry hub. Free-text hex
+        // entry below still covers hubs not yet announced on the mesh.
+        SettingItem selectHub;
+        selectHub.label = "Select Hub";
+        selectHub.type = SettingType::ACTION;
+        selectHub.formatter = [this, &s](int) -> String {
+            String cur = s.gpsTelemetryHubHash;
+            if (cur.isEmpty()) return String("[Enter]");
+            std::string hex(cur.c_str());
+            String name;
+            if (_am) {
+                std::string nm = _am->lookupName(hex);
+                if (!nm.empty()) name = String(nm.c_str());
+            }
+            if (!name.isEmpty()) {
+                if ((int)name.length() > 10) name = name.substring(0, 10);
+                return name + " " + cur.substring(0, 8);
+            }
+            return cur.substring(0, 8) + "...";
+        };
+        selectHub.action = [this]() { showPeerPicker(); };
+        _items.push_back(selectHub);
+        idx++;
+    }
+    {
+        SettingItem hubItem;
+        hubItem.label = "Telemetry Hub";
+        hubItem.type = SettingType::TEXT_INPUT;
+        hubItem.textGetter = [&s]() { return s.gpsTelemetryHubHash; };
+        hubItem.textSetter = [&s](const String& v) { s.gpsTelemetryHubHash = v; };
+        hubItem.maxTextLen = (int)UserSettings::GPS_TELEMETRY_HUB_HASH_LEN;
+        _items.push_back(hubItem);
+        idx++;
+    }
+    // Periodic telemetry interval (issue #64 "configurable by interval"
+    // privacy requirement). 0 = on-demand only (default — periodic must
+    // never start silently just because "Send Telemetry" is enabled; the
+    // user must pick a non-zero interval explicitly). Non-zero values are
+    // clamped at sanitizeSettings() to the LoRa channel-protection floor.
+    _items.push_back({"Telemetry Interval (s)", SettingType::INTEGER,
+        [&s]() { return s.gpsTelemetryIntervalS; },
+        [&s](int v) { s.gpsTelemetryIntervalS = v; },
+        [](int v) -> String {
+            // 0 is the on-demand-only sentinel; present it as "Off" so the
+            // user is never confused about whether periodic is running.
+            if (v == 0) return String("Off");
+            return String(v) + "s";
+        },
+        0, UserSettings::GPS_TELEMETRY_INTERVAL_MAX_S, 60});
+    idx++;
 #endif
     _items.push_back({"Timezone", SettingType::INTEGER,
         [&s]() { return (int)s.timezoneIdx; },
@@ -1224,6 +1284,8 @@ void LvSettingsScreen::onEnter() {
     _textEditing = false;
     _wifiScanActive = false;
     _wifiTargetSlot = 0;
+    _peerPickerIndices.clear();
+    _peerPickerIdx = 0;
     clearConfirmations();
     _kbBrightness = _cfg ? _cfg->settings().keyboardBrightness : 0;
     rebuildCategoryList();
@@ -1245,6 +1307,23 @@ void LvSettingsScreen::refreshUI() {
         }
         _fwCheckState = FirmwareCheckState::IDLE;
         if (_view == SettingsView::ITEM_LIST) rebuildItemList();
+    }
+
+    // Periodically refresh live readonly rows (Voltage, Estimated Charge)
+    // while sitting on the item list, so they don't show a stale snapshot
+    // from whenever the screen was last entered/edited. Skip while any
+    // edit mode is active so we don't clobber an in-progress "< Bar >"-
+    // style edit display.
+    if (_view == SettingsView::ITEM_LIST && !_editing && !_textEditing && !_freqEditing) {
+        unsigned long now = millis();
+        if (now - _lastReadonlyRefresh >= 1000) {
+            _lastReadonlyRefresh = now;
+            bool hasReadonly = false;
+            for (auto& item : _items) {
+                if (item.type == SettingType::READONLY) { hasReadonly = true; break; }
+            }
+            if (hasReadonly) rebuildItemList();
+        }
     }
 
     if (_view != SettingsView::WIFI_PICKER || !_wifiScanActive) return;
@@ -1716,6 +1795,160 @@ void LvSettingsScreen::rebuildWifiList() {
     }
 }
 
+void LvSettingsScreen::showPeerPicker() {
+    _peerPickerIndices.clear();
+    _peerPickerIdx = 0;
+    if (!_am) {
+        if (_ui) _ui->lvStatusBar().showToast("No peers seen yet", 1500);
+        return;
+    }
+    const auto& nodes = _am->nodes();
+    if (nodes.empty()) {
+        if (_ui) _ui->lvStatusBar().showToast("No peers seen yet", 1500);
+        return;
+    }
+    // Saved contacts first (in their original order), then transient peers.
+    for (int i = 0; i < (int)nodes.size(); i++) {
+        if (nodes[i].saved) _peerPickerIndices.push_back(i);
+    }
+    for (int i = 0; i < (int)nodes.size(); i++) {
+        if (!nodes[i].saved) _peerPickerIndices.push_back(i);
+    }
+    if ((int)_peerPickerIndices.size() > PEER_PICKER_CAP) {
+        _peerPickerIndices.resize(PEER_PICKER_CAP);
+    }
+    _view = SettingsView::PEER_PICKER;
+    rebuildPeerList();
+}
+
+void LvSettingsScreen::rebuildPeerList() {
+    if (!_scrollContainer) return;
+    _rowObjs.clear();
+    lv_obj_clean(_scrollContainer);
+
+    const lv_font_t* font = &lv_font_rsdeck_12;
+
+    // Header (tappable to go back)
+    lv_obj_t* headerRow = lv_obj_create(_scrollContainer);
+    lv_obj_set_size(headerRow, Theme::CONTENT_W, 22);
+    lv_obj_set_style_bg_opa(headerRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(headerRow, lv_color_hex(Theme::BORDER), 0);
+    lv_obj_set_style_border_width(headerRow, 1, 0);
+    lv_obj_set_style_border_side(headerRow, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_pad_all(headerRow, 0, 0);
+    lv_obj_set_style_radius(headerRow, 0, 0);
+    lv_obj_clear_flag(headerRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t* headerLbl = lv_label_create(headerRow);
+    lv_obj_set_style_text_font(headerLbl, font, 0);
+    lv_obj_set_style_text_color(headerLbl, lv_color_hex(Theme::ACCENT), 0);
+    lv_label_set_text(headerLbl, "< Select Telemetry Hub");
+    lv_obj_align(headerLbl, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_add_flag(headerRow, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(headerRow, [](lv_event_t* e) {
+        auto* self = (LvSettingsScreen*)lv_event_get_user_data(e);
+        self->_view = SettingsView::ITEM_LIST;
+        self->rebuildItemList();
+    }, LV_EVENT_CLICKED, this);
+
+    if (_peerPickerIndices.empty()) {
+        lv_obj_t* emptyLbl = lv_label_create(_scrollContainer);
+        lv_obj_set_style_text_font(emptyLbl, font, 0);
+        lv_obj_set_style_text_color(emptyLbl, lv_color_hex(Theme::TEXT_MUTED), 0);
+        lv_label_set_text(emptyLbl, "No peers seen yet");
+        return;
+    }
+
+    for (int i = 0; i < (int)_peerPickerIndices.size(); i++) {
+        int nodeIdx = _peerPickerIndices[i];
+        const auto& node = _am->nodes()[nodeIdx];
+        std::string hex = node.hash.toHex();
+
+        lv_obj_t* row = lv_obj_create(_scrollContainer);
+        lv_obj_set_size(row, Theme::CONTENT_W, 28);
+        lv_obj_add_style(row, LvTheme::styleListBtn(), 0);
+        lv_obj_add_style(row, LvTheme::styleListBtnFocused(), LV_STATE_FOCUSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(Theme::BORDER), 0);
+        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_user_data(row, (void*)(intptr_t)i);
+        lv_obj_add_event_cb(row, [](lv_event_t* e) {
+            auto* self = (LvSettingsScreen*)lv_event_get_user_data(e);
+            int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
+            self->selectPeerResult(idx);
+        }, LV_EVENT_CLICKED, this);
+        lv_group_add_obj(LvInput::group(), row);
+        lv_obj_add_event_cb(row, [](lv_event_t* e) {
+            lv_obj_scroll_to_view(lv_event_get_target(e), LV_ANIM_ON);
+        }, LV_EVENT_FOCUSED, nullptr);
+
+        // Primary line: name (if known) or short hash
+        std::string name = node.name;
+        if (name.empty()) name = _am->lookupName(hex);
+        char line[80];
+        if (!name.empty()) {
+            // Truncate name to fit alongside the hash suffix on one line
+            int nlen = (int)name.size();
+            if (nlen > 22) {
+                snprintf(line, sizeof(line), "%.22s %s...", name.c_str(), hex.substr(0, 8).c_str());
+            } else {
+                snprintf(line, sizeof(line), "%s %s...", name.c_str(), hex.substr(0, 8).c_str());
+            }
+        } else {
+            snprintf(line, sizeof(line), "%s...", hex.substr(0, 8).c_str());
+        }
+        lv_obj_t* lbl = lv_label_create(row);
+        lv_obj_set_style_text_font(lbl, font, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(Theme::TEXT_PRIMARY), 0);
+        clipLabel(lbl, Theme::CONTENT_W - 12);
+        lv_label_set_text(lbl, line);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 4, 0);
+
+        // Saved-contact star marker
+        if (node.saved) {
+            lv_obj_t* star = lv_label_create(row);
+            lv_obj_set_style_text_font(star, font, 0);
+            lv_obj_set_style_text_color(star, lv_color_hex(Theme::ACCENT), 0);
+            lv_label_set_text(star, "*");
+            lv_obj_align(star, LV_ALIGN_RIGHT_MID, -4, 0);
+        }
+
+        _rowObjs.push_back(row);
+    }
+
+    if (_peerPickerIdx >= 0 && _peerPickerIdx < (int)_rowObjs.size()) {
+        lv_group_focus_obj(_rowObjs[_peerPickerIdx]);
+    }
+}
+
+void LvSettingsScreen::selectPeerResult(int listIdx) {
+    if (!_cfg || !_am) return;
+    if (listIdx < 0 || listIdx >= (int)_peerPickerIndices.size()) return;
+    const auto& node = _am->nodes()[_peerPickerIndices[listIdx]];
+    std::string hex = node.hash.toHex();
+    if (hex.size() != (size_t)UserSettings::GPS_TELEMETRY_HUB_HASH_LEN) {
+        if (_ui) _ui->lvStatusBar().showToast("Invalid peer hash", 1500);
+        return;
+    }
+    // Save in memory; persist on the normal settings-save path (matches
+    // WiFi picker behavior — no flash write until the user backs out).
+    _cfg->settings().gpsTelemetryHubHash = String(hex.c_str());
+    String toast;
+    std::string name = node.name;
+    if (name.empty()) name = _am->lookupName(hex);
+    if (!name.empty()) {
+        toast = String("Hub set: ") + String(name.c_str());
+    } else {
+        toast = String("Hub set: ") + String(hex.substr(0, 8).c_str()) + "...";
+    }
+    if (_ui) _ui->lvStatusBar().showToast(toast.c_str(), 1500);
+    _view = SettingsView::ITEM_LIST;
+    rebuildItemList();
+}
+
 void LvSettingsScreen::updateCategorySelection(int oldIdx, int newIdx) {
     if (oldIdx >= 0 && oldIdx < (int)_rowObjs.size()) {
         bool pending = categoryNeedsReboot(oldIdx);
@@ -1757,6 +1990,20 @@ void LvSettingsScreen::updateItemSelection(int oldIdx, int newIdx) {
 }
 
 void LvSettingsScreen::updateWifiSelection(int oldIdx, int newIdx) {
+    if (oldIdx >= 0 && oldIdx < (int)_rowObjs.size()) {
+        lv_obj_set_style_bg_color(_rowObjs[oldIdx], lv_color_hex(Theme::BG), 0);
+        lv_obj_t* lbl = lv_obj_get_child(_rowObjs[oldIdx], 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, lv_color_hex(Theme::TEXT_PRIMARY), 0);
+    }
+    if (newIdx >= 0 && newIdx < (int)_rowObjs.size()) {
+        lv_obj_set_style_bg_color(_rowObjs[newIdx], lv_color_hex(Theme::BG_HOVER), 0);
+        lv_obj_t* lbl = lv_obj_get_child(_rowObjs[newIdx], 0);
+        if (lbl) lv_obj_set_style_text_color(lbl, lv_color_hex(Theme::TEXT_PRIMARY), 0);
+        lv_obj_scroll_to_view(_rowObjs[newIdx], LV_ANIM_OFF);
+    }
+}
+
+void LvSettingsScreen::updatePeerSelection(int oldIdx, int newIdx) {
     if (oldIdx >= 0 && oldIdx < (int)_rowObjs.size()) {
         lv_obj_set_style_bg_color(_rowObjs[oldIdx], lv_color_hex(Theme::BG), 0);
         lv_obj_t* lbl = lv_obj_get_child(_rowObjs[oldIdx], 0);
@@ -2009,6 +2256,29 @@ bool LvSettingsScreen::handleKey(const KeyEvent& event) {
             }
             if (event.del || event.character == 8 || event.character == 0x1B) {
                 _wifiScanActive = false;
+                _view = SettingsView::ITEM_LIST;
+                rebuildItemList();
+                return true;
+            }
+            return false;
+        }
+
+        case SettingsView::PEER_PICKER: {
+            if (event.enter || event.character == '\n' || event.character == '\r') {
+                lv_obj_t* focused = lv_group_get_focused(LvInput::group());
+                if (focused) {
+                    int idx = (int)(intptr_t)lv_obj_get_user_data(focused);
+                    if (idx >= 0 && idx < (int)_peerPickerIndices.size()) {
+                        selectPeerResult(idx);
+                        return true;
+                    }
+                }
+                // No focused row — bail out to item list
+                _view = SettingsView::ITEM_LIST;
+                rebuildItemList();
+                return true;
+            }
+            if (event.del || event.character == 8 || event.character == 0x1B) {
                 _view = SettingsView::ITEM_LIST;
                 rebuildItemList();
                 return true;

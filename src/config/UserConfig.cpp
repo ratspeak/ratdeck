@@ -27,6 +27,41 @@ void UserConfig::sanitizeSettings() {
         BATTERY_CHARGE_THRESHOLD_MIN, BATTERY_CHARGE_THRESHOLD_MAX);
     _settings.fullBatteryV = constrain(_settings.fullBatteryV,
         BATTERY_FULL_VOLTAGE_MIN, BATTERY_FULL_VOLTAGE_MAX);
+    _settings.adcDividerRatio = constrain(_settings.adcDividerRatio,
+        BATTERY_ADC_DIVIDER_MIN, BATTERY_ADC_DIVIDER_MAX);
+
+    // GPS telemetry hub hash must be exactly 32 hex chars; otherwise reset
+    // to the default Lyra collector hash. Empty / malformed values would
+    // make TelemetryManager refuse every send anyway, but persisting a
+    // broken hash causes silent UI confusion.
+    if (_settings.gpsTelemetryHubHash.length() != UserSettings::GPS_TELEMETRY_HUB_HASH_LEN) {
+        _settings.gpsTelemetryHubHash = UserSettings::GPS_TELEMETRY_DEFAULT_HUB_HASH;
+    } else {
+        bool allHex = true;
+        for (size_t i = 0; i < UserSettings::GPS_TELEMETRY_HUB_HASH_LEN; i++) {
+            char c = _settings.gpsTelemetryHubHash.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                allHex = false;
+                break;
+            }
+        }
+        if (!allHex) {
+            _settings.gpsTelemetryHubHash = UserSettings::GPS_TELEMETRY_DEFAULT_HUB_HASH;
+        }
+    }
+
+    // GPS telemetry periodic interval (seconds). 0 is a valid "off" value
+    // (the on-demand-only default). Negative values are coerced to 0. Any
+    // positive value below the LoRa channel-protection floor is clamped
+    // up to the floor; values above the ceiling are clamped down.
+    if (_settings.gpsTelemetryIntervalS < 0) {
+        _settings.gpsTelemetryIntervalS = 0;
+    } else if (_settings.gpsTelemetryIntervalS > 0 &&
+               _settings.gpsTelemetryIntervalS < UserSettings::GPS_TELEMETRY_INTERVAL_MIN_S) {
+        _settings.gpsTelemetryIntervalS = UserSettings::GPS_TELEMETRY_INTERVAL_MIN_S;
+    } else if (_settings.gpsTelemetryIntervalS > UserSettings::GPS_TELEMETRY_INTERVAL_MAX_S) {
+        _settings.gpsTelemetryIntervalS = UserSettings::GPS_TELEMETRY_INTERVAL_MAX_S;
+    }
 }
 
 bool UserConfig::parseJson(const String& json) {
@@ -119,12 +154,21 @@ bool UserConfig::parseJson(const String& json) {
     _settings.batteryModel = doc["batt_model"] | BATTERY_MODEL_LIPO;
     _settings.chargeThresholdV = doc["charge_thresh_v"] | BATTERY_CHARGE_THRESHOLD_DEFAULT;
     _settings.fullBatteryV = doc["full_battery_v"] | BATTERY_FULL_VOLTAGE_DEFAULT;
+    _settings.adcDividerRatio = doc["adc_divider"] | BATTERY_ADC_DIVIDER_DEFAULT;
 
     _settings.gpsTimeEnabled     = doc["gps_time"]     | true;
     _settings.gpsLocationEnabled = doc["gps_location"] | false;
     _settings.timezoneIdx        = doc["tz_idx"]       | 6;
     _settings.timezoneSet        = doc["tz_set"]       | false;
     _settings.use24HourTime      = doc["time_24h"]     | false;
+
+    // GPS telemetry (issue #64) — opt-in position sharing to a hub.
+    _settings.gpsTelemetryEnabled = doc["gps_telemetry_enabled"] | false;
+    _settings.gpsTelemetryHubHash = doc["gps_telemetry_hub"]      | UserSettings::GPS_TELEMETRY_DEFAULT_HUB_HASH;
+    // Periodic interval (seconds). 0 = on-demand only (default). Non-zero
+    // values are clamped in sanitizeSettings() to enforce the LoRa
+    // channel-protection minimum.
+    _settings.gpsTelemetryIntervalS = doc["gps_telemetry_interval_s"] | 0;
 
     _settings.audioEnabled = doc["audio_on"]  | true;
     _settings.audioVolume  = doc["audio_vol"] | 80;
@@ -200,12 +244,18 @@ String UserConfig::serializeToJson() {
     doc["batt_model"]   = _settings.batteryModel;
     doc["charge_thresh_v"] = _settings.chargeThresholdV;
     doc["full_battery_v"]  = _settings.fullBatteryV;
+    doc["adc_divider"]     = _settings.adcDividerRatio;
 
     doc["gps_time"]     = _settings.gpsTimeEnabled;
     doc["gps_location"] = _settings.gpsLocationEnabled;
     doc["tz_idx"]       = _settings.timezoneIdx;
     doc["tz_set"]       = _settings.timezoneSet;
     doc["time_24h"]     = _settings.use24HourTime;
+
+    // GPS telemetry (issue #64) — opt-in position sharing to a hub.
+    doc["gps_telemetry_enabled"] = _settings.gpsTelemetryEnabled;
+    doc["gps_telemetry_hub"]      = _settings.gpsTelemetryHubHash;
+    doc["gps_telemetry_interval_s"] = _settings.gpsTelemetryIntervalS;
 
     doc["audio_on"]  = _settings.audioEnabled;
     doc["audio_vol"] = _settings.audioVolume;

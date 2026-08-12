@@ -47,6 +47,7 @@
 #include "reticulum/AnnounceManager.h"
 #include "reticulum/LXMFManager.h"
 #include "reticulum/IdentityManager.h"
+#include "reticulum/TelemetryManager.h"
 #include "transport/LoRaInterface.h"
 #include "transport/WiFiInterface.h"
 #include <WiFiMulti.h>
@@ -112,6 +113,7 @@ UserConfig userConfig;
 Power powerMgr;
 AudioNotify audio;
 IdentityManager identityMgr;
+TelemetryManager telemetryManager;
 #if HAS_GPS
 GPSManager gps;
 #endif
@@ -948,6 +950,31 @@ static void handleSerialLineCommand(const char* line) {
             sendDiagnosticLiteLinkProof(line + 1);
             break;
         }
+        case 'B': {
+            const char* p = line + 1;
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) {
+                Serial.println("[SERIAL] usage: B<ratio>, for example B2.15 (see 'b' for the current value + calibration formula)");
+                return;
+            }
+            char* end = nullptr;
+            float ratio = strtof(p, &end);
+            if (end == p || ratio < BATTERY_ADC_DIVIDER_MIN || ratio > BATTERY_ADC_DIVIDER_MAX) {
+                Serial.printf("[SERIAL] invalid ratio (must be %.1f..%.1f)\n",
+                    BATTERY_ADC_DIVIDER_MIN, BATTERY_ADC_DIVIDER_MAX);
+                return;
+            }
+            powerMgr.setAdcDividerRatio(ratio);
+            userConfig.settings().adcDividerRatio = ratio;
+            userConfig.save(sdStore, flash);
+            Serial.printf("[SERIAL] adc_divider_ratio set to %.4f (saved)\n", ratio);
+            break;
+        }
+        case 'G': {
+            // G<32hex>  set telemetry collector hub hash (session only)
+            telemetryManager.setHubHashHex(line + 1);
+            break;
+        }
         default:
             Serial.printf("[SERIAL] unknown line command '%c'\n", line[0]);
             break;
@@ -955,9 +982,33 @@ static void handleSerialLineCommand(const char* line) {
 }
 
 static void printSerialHelp() {
-    Serial.println("[SERIAL] commands: ? help | a announce | t raw-test | d diag | r rssi | i irq | p tx-power-cycle | m min-power | q iq | +/- freq");
-    Serial.println("[SERIAL] line commands: F<hz> exact-frequency | P<dBm> exact-tx-power | L<len> [dest_hash] LXMF test");
+    Serial.println("[SERIAL] commands: ? help | a announce | t raw-test | d diag | r rssi | i irq | p tx-power-cycle | m min-power | q iq | b battery | g telemetry-send | V telemetry-status | +/- freq");
+    Serial.println("[SERIAL] line commands: F<hz> exact-frequency | P<dBm> exact-tx-power | L<len> [dest_hash] LXMF test | B<ratio> set-adc-divider-ratio | G<32hex> telemetry-hub");
     Serial.println("[SERIAL] lite relay diag: H<len> [dest] Header2 data | J [dest] linkreq | K<ctx_hex> link-data | Y<ctx_hex> link-proof");
+    telemetryManager.printHelp();
+}
+
+static void onHotkeyBatteryDiag() {
+    int raw = powerMgr.batteryRawAdc();
+    float ratio = powerMgr.adcDividerRatio();
+    float v = powerMgr.batteryVoltage();
+    int pct = powerMgr.batteryPercent();
+    bool charging = powerMgr.isCharging();
+    float rawMv = (raw / 4095.0f) * 3300.0f;  // raw ADC as mV, BEFORE divider scaling
+
+    Serial.println("=== BATTERY DIAGNOSTIC ===");
+    Serial.printf("raw_adc=%d  raw_mv=%.1f  divider_ratio=%.4f\n", raw, rawMv, ratio);
+    Serial.printf("voltage=%.3fV  percent=%d%%  charging=%s\n",
+        v, pct, charging ? "yes" : "no");
+    Serial.println("Calibrate: measure the battery with a multimeter (ideally with");
+    Serial.println("USB disconnected), then compute + set the correct ratio:");
+    if (raw > 0) {
+        Serial.printf("  divider_ratio = measured_mv / %.1f\n", rawMv);
+        Serial.println("  Then set it with:  B<ratio>   e.g. B2.15");
+    } else {
+        Serial.println("  (raw_adc is 0 - can't compute a ratio right now)");
+    }
+    Serial.println("==========================");
 }
 
 static void handleSerialCommands() {
@@ -986,7 +1037,7 @@ static void handleSerialCommands() {
         }
 
         if (c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
-        if (c == 'F' || c == 'P' || c == 'L' || c == 'H' || c == 'J' || c == 'K' || c == 'Y') {
+        if (c == 'F' || c == 'P' || c == 'L' || c == 'H' || c == 'J' || c == 'K' || c == 'Y' || c == 'B' || c == 'G') {
             lineActive = true;
             lineLen = 0;
             line[lineLen++] = c;
@@ -1027,6 +1078,19 @@ static void handleSerialCommands() {
             case 'q':
             case 'Q':
                 toggleDiagnosticInvertIQ();
+                break;
+            case 'b':
+                onHotkeyBatteryDiag();
+                break;
+            case 'g':
+                telemetryManager.handleSerial('g', nullptr);
+                break;
+            case 'v':
+            case 'V':
+                // 'V' = telemetry status dump (counters + state).
+                // Avoided 'T' because it is already mapped to
+                // onHotkeyRadioTest() at the case 't'/'T' branch above.
+                telemetryManager.handleSerial('V', nullptr);
                 break;
             case '+':
             case '=':
@@ -1357,6 +1421,26 @@ void setup() {
     // (LVGL boot renders via lv_timer_handler in setProgress)
     bootTraceStage("lxmf-begin");
 
+    // Step 17.5: Telemetry manager (Stage 1 rsDeck #64 / thin hybrid)
+    // Pure optional component — no UI yet, default hub hash is set at
+    // build time. GPS may be disabled; we still bind Power + RNS so
+    // serial `g` can run the privacy-gate diagnostics even before a
+    // first fix lands.
+    telemetryManager.begin(&rns,
+#if HAS_GPS
+                           &gps,
+#else
+                           nullptr,
+#endif
+                           &powerMgr);
+    // Wire UserConfig so Settings > Time & Location > Send Telemetry /
+    // Telemetry Hub can gate the send and override the compiled-in hub
+    // hash. Optional — telemetry still works with the default hub if
+    // this is never called.
+    telemetryManager.setUserConfig(&userConfig);
+    Serial.println("[TELEMETRY] manager bound (rsDeck #64 Stage 1, default hub=da424e0f47657d7575df58a2b83b111b)");
+    bootTraceStage("telemetry-manager");
+
     // Step 18: Announce manager
     lvBootScreen.setProgress(0.78f, "Loading contacts...");
     // (LVGL boot renders via lv_timer_handler in setProgress)
@@ -1547,6 +1631,7 @@ void setup() {
     powerMgr.setBatteryModel(userConfig.settings().batteryModel);
     powerMgr.setChargeThreshold(userConfig.settings().chargeThresholdV);
     powerMgr.setFullBatteryVoltage(userConfig.settings().fullBatteryV);
+    powerMgr.setAdcDividerRatio(userConfig.settings().adcDividerRatio);
 
 
 
@@ -1577,6 +1662,7 @@ void setup() {
     lvHomeScreen.setRadio(&radio);
     lvHomeScreen.setUserConfig(&userConfig);
     lvHomeScreen.setLXMFManager(&lxmf);
+    lvHomeScreen.setGPSManager(&gps);
     lvHomeScreen.setAnnounceManager(announceManager);
     lvHomeScreen.setRadioOnline(radioOnline);
     lvHomeScreen.setTCPClients(&tcpClients);
@@ -1737,6 +1823,7 @@ void setup() {
     lvSettingsScreen.setTCPClients(&tcpClients);
     lvSettingsScreen.setRNS(&rns);
     lvSettingsScreen.setIdentityManager(&identityMgr);
+    lvSettingsScreen.setAnnounceManager(announceManager);
     lvSettingsScreen.setUIManager(&ui);
     lvSettingsScreen.setIdentityHash(rns.destinationHashStr());
     lvSettingsScreen.setDestinationHash(rns.destinationHashHex());
@@ -2071,6 +2158,7 @@ void loop() {
     lxmf.loop();
     if (announceManager) announceManager->loop();
     audio.loop();
+    telemetryManager.loop();
 
     // 7. WiFi STA connection handler
     if (wifiSTAStarted) {
@@ -2304,12 +2392,18 @@ void loop() {
             }
 #if HAS_GPS
             if (userConfig.settings().gpsTimeEnabled) {
-                Serial.printf("[GPS] sats=%d timeFix=%s locFix=%s syncs=%lu chars=%lu\n",
+                const auto tc = telemetryManager.counters();
+                Serial.printf("[GPS] sats=%d timeFix=%s locFix=%s syncs=%lu chars=%lu telemTicks=%lu telemNoFix=%lu telemStale=%lu telemAbort=%lu telemTx=%lu\n",
                     gps.satellites(),
                     gps.hasTimeFix() ? "YES" : "NO",
                     gps.hasLocationFix() ? "YES" : "NO",
                     (unsigned long)gps.timeSyncCount(),
-                    (unsigned long)gps.charsProcessed());
+                    (unsigned long)gps.charsProcessed(),
+                    (unsigned long)tc.ticksFired,
+                    (unsigned long)tc.refusedNoFix,
+                    (unsigned long)tc.refusedStale,
+                    (unsigned long)tc.discoveryAborted,
+                    (unsigned long)tc.txAccepted);
             }
 #endif
             maxLoopTime = 0;

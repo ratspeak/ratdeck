@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ui/UIManager.h"
+#include "hal/GPSManager.h"
 #include <Arduino.h>
 #include <functional>
 #include <vector>
@@ -33,6 +34,7 @@ public:
     void setWiFiToggleCallback(std::function<void()> cb) { _wifiToggleCb = cb; }
     void setGPSToggleCallback(std::function<void()> cb) { _gpsToggleCb = cb; }
     void setPeersCallback(std::function<void()> cb) { _peersCb = cb; }
+    void setGPSManager(GPSManager* gps) { _gps = gps; }
 
     const char* title() const override { return "Home"; }
 
@@ -51,6 +53,15 @@ private:
     std::function<void()> _wifiToggleCb;
     std::function<void()> _gpsToggleCb;
     std::function<void()> _peersCb;
+    GPSManager* _gps = nullptr;
+    // GPS status display state — decoupled from GPSManager::fixAgeMs()
+    // (which resets on every ~1Hz NMEA sentence and would jitter the UI).
+    // Instead we show a sticky "checkpoint" counter: while receiving,
+    // it counts 0s -> 30s; at the 30s mark it either resets to 0s (if
+    // still receiving) or flips to STALE and keeps counting up from
+    // there uninterrupted until a fresh fix arrives again.
+    unsigned long _gpsCheckpointMs = 0;
+    bool _gpsCheckpointSet = false;
     unsigned long _lastRefreshMs = 0;
     unsigned long _lastUptime = 0;
     uint32_t _lastHeap = 0;
