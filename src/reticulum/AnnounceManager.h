@@ -21,6 +21,14 @@ struct DiscoveredNode {
     uint8_t hops = 0;
     unsigned long lastSeen = 0;
     bool saved = false;
+    // Peer-on-map (rsDeck #64): saved contacts that have explicitly shared
+    // lat/lon via LXMF message parsing. hasLocation is the only "show on map"
+    // gate for the UI; lat/lon are in WGS84 degrees. locTs is the boot-relative
+    // millis() at the moment the value was set (debug-only; not persisted).
+    double lat = 0.0;
+    double lon = 0.0;
+    bool hasLocation = false;
+    unsigned long locTs = 0;
 };
 
 class AnnounceManager : public RNS::AnnounceHandler {
@@ -52,6 +60,16 @@ public:
     const DiscoveredNode* findNode(const RNS::Bytes& hash) const;
     const DiscoveredNode* findNodeByHex(const std::string& hexHash) const;
     void addManualContact(const std::string& hexHash, const std::string& name);
+    // Peer-on-map (rsDeck #64). Ensure a node exists as a saved contact (so
+    // map UI can show a pin for it). Creates one if missing. No-ops silently
+    // if the hash can't be decoded. Returns true iff a saved contact with
+    // this hash is present after the call.
+    bool ensureSavedContact(const std::string& hexHash, const std::string& nameHint = "");
+    // Set location for a saved contact. On parseable inbound location share,
+    // call ensureSavedContact() then setLocation() — this enforces the
+    // "saved contacts only" map-pin rule without needing a parallel store.
+    // Returns true iff the value was stored (i.e. node is a saved contact).
+    bool setLocation(const std::string& hexHash, double lat, double lon);
     void evictStale(unsigned long maxAgeMs = 3600000);
     void clearTransientNodes();
     void clearAll();

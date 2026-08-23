@@ -106,9 +106,14 @@ struct UserSettings {
     // BLE
     bool bleEnabled = false;
 
-    // GPS & Time
+    // GPS & Time — defaults are ON for both time sync and location
+    // tracking. The legacy default was OFF for location; existing
+    // installs with `gps_location=false` stored in NVS will keep that
+    // explicit value (see UserConfig.cpp migration below — a one-time
+    // `gps_defaults_v2` marker is written on first load after the
+    // migration runs).
     bool gpsTimeEnabled = true;      // GPS time sync (default ON)
-    bool gpsLocationEnabled = false; // GPS position tracking (default OFF, user must opt in)
+    bool gpsLocationEnabled = true;  // GPS position tracking (default ON)
     uint8_t timezoneIdx = 6;         // Index into TIMEZONE_TABLE (default: New York EST/EDT)
     bool timezoneSet = false;        // false = show timezone picker at boot
     bool use24HourTime = false;      // false = 12h (no AM/PM), true = 24h

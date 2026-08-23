@@ -348,6 +348,81 @@ void AnnounceManager::addManualContact(const std::string& hexHash, const std::st
     saveContact(node);
 }
 
+// Peer-on-map (rsDeck #64): make sure a node exists as a saved contact.
+// No-ops on a malformed hash. Returns true iff a saved contact with this
+// hash is present after the call (whether we created it or it already
+// existed). Used by the LXMF message path so a parsed location share
+// always has a contact to attach to.
+bool AnnounceManager::ensureSavedContact(const std::string& hexHash, const std::string& nameHint) {
+    if (hexHash.empty()) return false;
+    auto* existing = findNodeByHex(hexHash);
+    if (existing) {
+        if (existing->saved) return true;
+        // Promote transient → saved. The address-book path always keys by
+        // raw hash bytes (not the prefix-fallback lookup in findNodeByHex)
+        // so mutate via the raw key to update the in-place node.
+        RNS::Bytes raw;
+        raw.assignHex(hexHash.c_str());
+        auto it = _hashIndex.find(makeKey(raw));
+        if (it == _hashIndex.end()) return false;
+        auto& node = _nodes[it->second];
+        node.saved = true;
+        // Don't touch the name unless the hint actually adds info — saved
+        // contacts own their local alias (mirrors the received_announce()
+        // rule for repeats).
+        if (!nameHint.empty()) {
+            std::string safeName = sanitizeName(nameHint);
+            if (!safeName.empty()) node.name = safeName;
+        }
+        saveContact(node);
+        return true;
+    }
+    // Not present at all — fall back to manual add so the contact exists.
+    // We deliberately do NOT fabricate an identityHex here (we have no
+    // identity to recover from for an unknown hash); announce-driven
+    // enrichment happens later when they announce.
+    addManualContact(hexHash, nameHint);
+    auto* after = findNodeByHex(hexHash);
+    return after != nullptr && after->saved;
+}
+
+// Peer-on-map (rsDeck #64): attach lat/lon to an existing saved contact.
+// If the node isn't present (e.g. location arrived in a message before
+// the first announce), ensureSavedContact() creates it. Returns true iff
+// the value was actually written to a saved-contact's fields. Never logs
+// lat/lon — the map UI gets them via nodes() and renders the pin.
+bool AnnounceManager::setLocation(const std::string& hexHash, double lat, double lon) {
+    if (hexHash.empty()) return false;
+    // Reject obviously bad values the parser should have filtered, but
+    // guard again here in case a future caller bypasses LocationParse.
+    if (lat < -90.0 || lat > 90.0) return false;
+    if (lon < -180.0 || lon > 180.0) return false;
+    if (lat == 0.0 && lon == 0.0) return false;
+
+    auto* node = findNodeByHex(hexHash);
+    if (!node || !node->saved) {
+        // Either unknown or transient — promote/create as saved so the
+        // pin rule ("only saved contacts show on the map") holds. Use the
+        // raw-hex lookup because the existing node (if any) lives under
+        // its raw key.
+        ensureSavedContact(hexHash, "");
+        node = findNodeByHex(hexHash);
+        if (!node || !node->saved) return false;
+    }
+
+    RNS::Bytes raw;
+    raw.assignHex(hexHash.c_str());
+    auto it = _hashIndex.find(makeKey(raw));
+    if (it == _hashIndex.end()) return false;
+    auto& n = _nodes[it->second];
+    n.lat = lat;
+    n.lon = lon;
+    n.hasLocation = true;
+    n.locTs = millis();
+    saveContact(n);
+    return true;
+}
+
 void AnnounceManager::evictStale(unsigned long maxAgeMs) {
     unsigned long now = millis();
     _nodes.erase(std::remove_if(_nodes.begin(), _nodes.end(),
@@ -388,6 +463,14 @@ void AnnounceManager::saveContact(const DiscoveredNode& node) {
     std::string hexHash = node.hash.toHex();
     JsonDocument doc;
     doc["hash"] = hexHash; doc["name"] = node.name;
+    // Peer-on-map (rsDeck #64): persist lat/lon for saved contacts that have
+    // shared location. locTs is intentionally skipped — millis() is boot-
+    // relative and would mislead after a reboot; the absence of locTs on
+    // disk is fine because hasLocation+lat+lon is enough to render the pin.
+    if (node.hasLocation) {
+        doc["lat"] = node.lat;
+        doc["lon"] = node.lon;
+    }
     String json;
     serializeJson(doc, json);
     String filename = hexHash.substr(0, 16).c_str();
@@ -442,6 +525,22 @@ void AnnounceManager::loadContacts() {
                                 node.hops = 0;
                                 node.lastSeen = 0;
                                 node.saved = true;
+                                // Peer-on-map (rsDeck #64): restore a saved
+                                // contact's last-known lat/lon if present. Both
+                                // fields must parse as doubles AND pass the
+                                // WGS84 range check before we trust them — any
+                                // corruption stays quarantined to hasLocation=false.
+                                if (doc["lat"].is<double>() && doc["lon"].is<double>()) {
+                                    double la = doc["lat"].as<double>();
+                                    double lo = doc["lon"].as<double>();
+                                    if ((la != 0.0 || lo != 0.0) &&
+                                        la >= -90.0 && la <= 90.0 &&
+                                        lo >= -180.0 && lo <= 180.0) {
+                                        node.lat = la;
+                                        node.lon = lo;
+                                        node.hasLocation = true;
+                                    }
+                                }
                                 _hashIndex[key] = (int)_nodes.size();
                                 _nodes.push_back(node);
                                 loaded++;

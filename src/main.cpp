@@ -62,6 +62,7 @@
 #include "config/UserConfig.h"
 #include "audio/AudioNotify.h"
 #include "util/PerfTrace.h"
+#include "util/LocationParse.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <atomic>
@@ -1702,6 +1703,24 @@ void setup() {
     lxmf.begin(&rns, &messageStore);
     lxmf.setMessageCallback([](const LXMFMessage& msg) {
         Serial.printf("[LXMF] Message from %s\n", msg.sourceHash.toHex().substr(0, 8).c_str());
+        // Peer-on-map (rsDeck #64): parse the message body for a single
+        // lat/lon share and stash it on the saved contact. announceManager
+        // is created at step 18 (after this callback is registered) so it
+        // may be null during early boot. Messages that arrive after the
+        // manager is up will be ingested normally. Coordinates are NEVER
+        // logged — the log line only echoes the truncated sender hash so
+        // operators can correlate "what updated my map?" with a sender.
+        if (announceManager) {
+            const std::string& body = msg.content;
+            double lat = 0, lon = 0;
+            if (LocationParse::tryParse(body.c_str(), body.size(), lat, lon)) {
+                std::string hex = msg.sourceHash.toHex();
+                if (announceManager->setLocation(hex, lat, lon)) {
+                    Serial.printf("[MAP] contact location updated from %s\n",
+                                  hex.substr(0, 8).c_str());
+                }
+            }
+        }
         ui.lvTabBar().setUnreadCount(LvTabBar::TAB_MSGS, lxmf.unreadCount());
         audio.requestMessage();
     });
@@ -2087,6 +2106,37 @@ void setup() {
         ui.lvTabBar().setActiveTab(LvTabBar::TAB_MSGS);
         ui.setScreen(&lvMessageView);
     });
+    // "Send GPS" action from the nodes screen action menu. Build the
+    // `LOC lat lon` body from the current fix and dispatch via LXMF.
+    // We only run when the user has GPS location tracking on AND has a
+    // fresh fix; otherwise we toast the reason. Coordinates are never
+    // logged — the payload itself is the only place they appear.
+#if HAS_GPS
+    lvNodesScreen.setSendGpsCallback([](const std::string& peerHex) {
+        if (!userConfig.settings().gpsLocationEnabled) {
+            ui.lvStatusBar().showToast("GPS location off", 1500);
+            return;
+        }
+        if (!gps.hasLocationFix()) {
+            ui.lvStatusBar().showToast("No GPS fix", 1500);
+            return;
+        }
+        char body[64];
+        snprintf(body, sizeof(body), "LOC %.5f %.5f",
+                 gps.latitude(), gps.longitude());
+        RNS::Bytes destHash;
+        destHash.assignHex(peerHex.c_str());
+        // Mirror a contact before sending so the receiving side can
+        // also see this peer in its contact list (matches the chat
+        // path's expectations and lets them reply).
+        if (announceManager) announceManager->ensureSavedContact(peerHex);
+        if (!lxmf.sendMessage(destHash, body)) {
+            ui.lvStatusBar().showToast("GPS send failed", 1500);
+            return;
+        }
+        ui.lvStatusBar().showToast("GPS sent", 1200);
+    });
+#endif
 
     lvMessagesScreen.setLXMFManager(&lxmf);
     lvMessagesScreen.setAnnounceManager(announceManager);
@@ -2099,6 +2149,10 @@ void setup() {
     lvMessageView.setLXMFManager(&lxmf);
     lvMessageView.setAnnounceManager(announceManager);
     lvMessageView.setUIManager(&ui);
+    lvMessageView.setUserConfig(&userConfig);
+#if HAS_GPS
+    lvMessageView.setGPSManager(&gps);
+#endif
     lvMessageView.setBackCallback([]() {
         ui.setScreen(&lvMessagesScreen);
     });
@@ -2165,6 +2219,11 @@ void setup() {
     lvMapScreen.setGPSManager(&gps);
 #endif
     lvMapScreen.setUIManager(&ui);
+    // Peer-on-map (rsDeck #64): the map screen reads saved contacts that
+    // have lat/lon and renders diamond pins. announceManager is null only
+    // if the boot sequence above failed before step 18, which would have
+    // already aborted the rest of setup.
+    if (announceManager) lvMapScreen.setAnnounceManager(announceManager);
 
     // LVGL help overlay
     lvHelpOverlay.create();

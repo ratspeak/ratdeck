@@ -5,11 +5,14 @@
 #include "hal/GPSManager.h"
 #include "hal/Trackball.h"
 #include "hal/TouchInput.h"
+#include "reticulum/AnnounceManager.h"
 #include "ui/Theme.h"
 #include "ui/UIManager.h"
 #include "ui/LvTabBar.h"
 #include "ui/LvTheme.h"
 #include <Arduino.h>
+#include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include "fonts/fonts.h"
@@ -196,22 +199,80 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
                               &lv_font_rsdeck_10, Theme::TEXT_SECONDARY,
                               _followGPS ? "FOLLOW" : "MANUAL");
 
+    // ---- Peer-on-map contact pin pool (rsDeck #64) ----
+    // Created BEFORE nav buttons so pan/zoom controls stay above pins in
+    // z-order (pins must never cover the D-pad). GPS marker is created
+    // last so self stays on top of everything. Pool is reused across
+    // refreshes: updateContactMarkers() hides all, then assigns slots.
+    {
+        static constexpr int kDiamondSize = 10;       // ~5px radius
+        static constexpr int kBadgeW = 30;            // up to 4 chars + pad
+        static constexpr int kBadgeH = 12;            // matches font height + pad
+        static constexpr int kRibbonW = 28;           // 4 chars * ~6 + 2*2 pad
+        static constexpr int kRibbonH = 12;
+        for (int i = 0; i < MAX_CONTACT_MARKERS; ++i) {
+            ContactPinWidget& cp = _contactPins[i];
+            // Diamond: rounded square approximation (LVGL has no cheap
+            // 45° rotate). 10x10 + radius 2 reads as a pin at this size.
+            cp.diamond = lv_obj_create(parent);
+            lv_obj_set_size(cp.diamond, kDiamondSize, kDiamondSize);
+            lv_obj_set_pos(cp.diamond, -9999, -9999);  // off-screen until placed
+            lv_obj_set_style_radius(cp.diamond, 2, 0);
+            lv_obj_set_style_bg_color(cp.diamond, lv_color_hex(Theme::ACCENT), 0);
+            lv_obj_set_style_bg_opa(cp.diamond, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_color(cp.diamond, lv_color_hex(Theme::TEXT_PRIMARY), 0);
+            lv_obj_set_style_border_width(cp.diamond, 1, 0);
+            lv_obj_set_style_pad_all(cp.diamond, 0, 0);
+            lv_obj_set_style_shadow_width(cp.diamond, 0, 0);
+            lv_obj_add_flag(cp.diamond, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(cp.diamond, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            cp.badge = lv_label_create(parent);
+            lv_obj_set_size(cp.badge, kBadgeW, kBadgeH);
+            lv_obj_set_pos(cp.badge, -9999, -9999);
+            lv_obj_set_style_text_font(cp.badge, &lv_font_rsdeck_10, 0);
+            lv_obj_set_style_text_color(cp.badge, lv_color_hex(Theme::TEXT_PRIMARY), 0);
+            lv_obj_set_style_bg_color(cp.badge, lv_color_hex(Theme::BG_SURFACE), 0);
+            lv_obj_set_style_bg_opa(cp.badge, LV_OPA_70, 0);
+            lv_obj_set_style_pad_left(cp.badge, 2, 0);
+            lv_obj_set_style_pad_right(cp.badge, 2, 0);
+            lv_obj_set_style_pad_top(cp.badge, 0, 0);
+            lv_obj_set_style_pad_bottom(cp.badge, 0, 0);
+            lv_obj_set_style_text_align(cp.badge, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_radius(cp.badge, 2, 0);
+            lv_obj_set_style_border_width(cp.badge, 0, 0);
+            lv_obj_add_flag(cp.badge, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(cp.badge, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            for (int r = 0; r < MAX_RIBBON_LABELS; ++r) {
+                cp.ribbons[r] = lv_label_create(parent);
+                lv_obj_t* rib = cp.ribbons[r];
+                lv_obj_set_size(rib, kRibbonW, kRibbonH);
+                lv_obj_set_pos(rib, -9999, -9999);
+                lv_obj_set_style_text_font(rib, &lv_font_rsdeck_10, 0);
+                lv_obj_set_style_text_color(rib, lv_color_hex(Theme::TEXT_PRIMARY), 0);
+                lv_obj_set_style_bg_color(rib, lv_color_hex(Theme::BG_SURFACE), 0);
+                lv_obj_set_style_bg_opa(rib, LV_OPA_70, 0);
+                lv_obj_set_style_pad_left(rib, 2, 0);
+                lv_obj_set_style_pad_right(rib, 2, 0);
+                lv_obj_set_style_pad_top(rib, 0, 0);
+                lv_obj_set_style_pad_bottom(rib, 0, 0);
+                lv_obj_set_style_text_align(rib, LV_TEXT_ALIGN_LEFT, 0);
+                lv_obj_set_style_radius(rib, 2, 0);
+                lv_obj_set_style_border_width(rib, 0, 0);
+                lv_obj_add_flag(rib, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(rib, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+            }
+        }
+    }
+
     // ---- Nav overlay (D-pad + zoom) ----
-    // Created AFTER HUD labels so they're drawn on top. The GPS marker
-    // is created AFTER this block (below) so it sits on top of nav
-    // buttons — a marker that happens to land under a button still shows.
-    // Each button reuses the shared LvTheme button styles so it follows
-    // any future palette tweaks (Light scheme, etc).
+    // AFTER contact pins so controls stay discoverable above peer pins.
+    // GPS marker is created last (below) so self still wins z-order.
     auto makeNavBtn = [&](int idx, int x, int y, const char* sym, lv_event_cb_t cb) {
         lv_obj_t* btn = lv_btn_create(parent);
         lv_obj_set_size(btn, kNavBtnW, kNavBtnH);
         lv_obj_set_pos(btn, x, y);
         lv_obj_add_style(btn, LvTheme::styleBtn(), 0);
         lv_obj_add_style(btn, LvTheme::styleBtnPressed(), LV_STATE_PRESSED);
-        // Subtler than full opaque BG_ELEVATED so the buttons don't
-        // visually dominate the map. Opacity ~70% lets the underlying
-        // tile imagery show through; the BG color stays BG_ELEVATED
-        // so the contrast against the map is preserved.
         lv_obj_set_style_bg_opa(btn, LV_OPA_70, 0);
         lv_obj_set_style_border_width(btn, 1, 0);
         lv_obj_set_style_border_color(btn, lv_color_hex(Theme::BORDER), 0);
@@ -219,8 +280,6 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
         lv_obj_set_style_pad_all(btn, 0, 0);
         lv_obj_set_style_shadow_width(btn, 0, 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
-        // Label uses LVGL's built-in FontAwesome glyphs (the
-        // lv_font_montserrat_12 range covers them; see LvTabBar.cpp).
         lv_obj_t* lbl = lv_label_create(btn);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(lbl, lv_color_hex(Theme::TEXT_PRIMARY), 0);
@@ -229,25 +288,13 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
         lv_obj_center(lbl);
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, this);
         _navBtns[idx] = btn;
-        // Cache screen-absolute bounds so refreshUI()'s touch hit test
-        // can compare raw touch coords directly. The content parent is
-        // positioned at y=STATUS_BAR_H by UIManager, so add it.
         _navBtnX1[idx] = x;
         _navBtnY1[idx] = y + Theme::STATUS_BAR_H;
         _navBtnX2[idx] = x + kNavBtnW - 1;
         _navBtnY2[idx] = y + kNavBtnH - 1 + Theme::STATUS_BAR_H;
         return btn;
     };
-    // Sign convention for all four directional buttons: pressing LEFT means
-    // the viewport's CENTER moves LEFT (the world content slides LEFT under
-    // a stationary touch, like dragging the map with the trackball). panBy
-    // adds its dx/dy directly to _centerWorldPx (see panBy() below — Y grows
-    // downward in slippy-map coords, so "up on screen" is a negative dy).
-    // The same convention applies to the trackball in refreshUI() (camera
-    // follows the ball), and to the keyboard arrow keys in handleKey(). The
-    // touch-drag path in refreshUI() uses the OPPOSITE convention (camera
-    // moves opposite the finger, like pushing a paper map) — that's the
-    // standard mobile-map feel and is left as-is.
+    // Sign convention: LEFT moves viewport center left (same as trackball).
     makeNavBtn(NAV_BTN_LEFT,  kNavColLeft,   kNavRow1, LV_SYMBOL_LEFT,  [](lv_event_t* e){
         auto* self = (LvMapScreen*)lv_event_get_user_data(e);
         self->panBy(-32, 0); self->rebuildTiles();
@@ -274,11 +321,7 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
     });
 
     // ---- GPS marker (separate overlay, NOT baked into the tile grid) ----
-    // A small filled circle. Created LAST so it sits on top of EVERY
-    // other widget (tiles, HUD, nav buttons) — a marker that happens
-    // to be positioned under a nav button still shows through.
-    // We don't use a canvas — a plain lv_obj with circular styling is
-    // cheaper and perfectly fine for one static dot.
+    // Created LAST so it sits on top of tiles, HUD, contact pins, and nav.
     _marker = lv_obj_create(parent);
     lv_obj_set_size(_marker, kMarkerSize, kMarkerSize);
     lv_obj_set_pos(_marker, 0, 0);
@@ -331,6 +374,13 @@ void LvMapScreen::destroyUI() {
         _slots[i].tx = INT32_MIN;
         _slots[i].ty = INT32_MIN;
         _slots[i].tz = -1;
+    }
+    for (int i = 0; i < MAX_CONTACT_MARKERS; ++i) {
+        _contactPins[i].diamond = nullptr;
+        _contactPins[i].badge = nullptr;
+        for (int r = 0; r < MAX_RIBBON_LABELS; ++r) {
+            _contactPins[i].ribbons[r] = nullptr;
+        }
     }
     // No lv_img references our cache buffers any more — release the pins so
     // the pool is fully evictable while the map screen is closed.
@@ -937,6 +987,11 @@ void LvMapScreen::updateMarker() {
     }
 
     // Project current GPS lat/lon to screen-space at the current zoom.
+    // IMPORTANT: always use the same origin as contact pins (viewportOrigin).
+    // Do NOT force the self marker to screen-center when follow is on —
+    // clampCenterToWorld() can shift the center away from true GPS at low
+    // zoom; pinning self to center while contacts use true projection made
+    // peer pins look NE/SE-flipped relative to "me" below ~z6.
     SlippyMath::WorldPx wp = SlippyMath::lonLatToWorldPx(
         _gps->longitude(), _gps->latitude(), _zoom);
     int64_t ox, oy;
@@ -961,6 +1016,291 @@ void LvMapScreen::updateMarker() {
         const char* mode = (fq >= 1) ? "3D" : "2D";
         snprintf(buf, sizeof(buf), "GPS %s %dsat", mode, _gps->satellites());
         lv_label_set_text(_hudGps, buf);
+    }
+
+    // Peer-on-map (rsDeck #64): re-project contact pins against the
+    // current viewport. Same 1Hz cadence as the self marker so a moving
+    // map (panning, follow-GPS) keeps pins glued to their geography.
+    updateContactMarkers();
+}
+
+// ---- Peer-on-map (rsDeck #64) ----
+
+// Short label for a contact. Display name preferred, else first 4 chars of
+// the dest hex. Result is NUL-terminated in out[0..3] (out[4]); out[5] is
+// the buffer size to keep callers from overrunning.
+void LvMapScreen::shortLabel(const DiscoveredNode& n, char out[5]) {
+    out[0] = out[1] = out[2] = out[3] = out[4] = 0;
+    const char* src = nullptr;
+    if (!n.name.empty()) {
+        src = n.name.c_str();
+    } else {
+        // Fallback to hex hash prefix (toHex is expensive — but we only
+        // call this for visible contacts and the pool is bounded to 16).
+        std::string hex = n.hash.toHex();
+        src = hex.c_str();
+    }
+    if (!src || !src[0]) {
+        out[0] = '?';
+        return;
+    }
+    size_t i = 0;
+    for (; i < 4 && src[i] && src[i] != ' ' && src[i] != '\t'; i++) {
+        out[i] = (char)toupper((unsigned char)src[i]);
+    }
+    // If the source was empty after skipping whitespace, mark as unknown.
+    if (i == 0) out[0] = '?';
+}
+
+void LvMapScreen::updateContactMarkers() {
+    // Hide the entire pool first — widgets assigned this refresh show
+    // again below; widgets NOT assigned stay hidden so old pins don't
+    // linger after a contact's location is cleared.
+    for (int i = 0; i < MAX_CONTACT_MARKERS; ++i) {
+        ContactPinWidget& cp = _contactPins[i];
+        if (cp.diamond) lv_obj_add_flag(cp.diamond, LV_OBJ_FLAG_HIDDEN);
+        if (cp.badge)   lv_obj_add_flag(cp.badge,   LV_OBJ_FLAG_HIDDEN);
+        for (int r = 0; r < MAX_RIBBON_LABELS; ++r) {
+            if (cp.ribbons[r]) lv_obj_add_flag(cp.ribbons[r], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (!_am) return;
+    if (!_contactPins[0].diamond) return;  // createUI() not yet run
+
+    // Project every saved+located contact to screen-space at the current
+    // zoom. Skip if the projection falls outside the viewport — Pro
+    // MapScreen does the same and avoids drawing pins the user can't see.
+    struct Pin {
+        int16_t sx, sy;
+        const DiscoveredNode* n;
+        bool used = false;
+    };
+    Pin pins[MAX_CONTACT_MARKERS];
+    int nPins = 0;
+    int64_t ox, oy;
+    viewportOriginWorldPx(ox, oy);
+    const auto& nodes = _am->nodes();
+    for (const auto& n : nodes) {
+        if (!n.saved || !n.hasLocation) continue;
+        if (nPins >= MAX_CONTACT_MARKERS) break;
+        SlippyMath::WorldPx wp = SlippyMath::lonLatToWorldPx(n.lon, n.lat, _zoom);
+        int sx = (int)(wp.x - ox);
+        int sy = (int)(wp.y - oy);
+        if (sx < 0 || sx >= VIEW_W || sy < 0 || sy >= VIEW_H) continue;
+        pins[nPins].sx = (int16_t)sx;
+        pins[nPins].sy = (int16_t)sy;
+        pins[nPins].n = &n;
+        pins[nPins].used = false;
+        nPins++;
+    }
+    if (nPins == 0) return;
+
+    // Self screen pos (for the "nudge if stack sits on self" rule). The
+    // self marker can be hidden if GPS has no fix — that's fine, we just
+    // skip the nudge in that case. Computed BEFORE the diagnostic log
+    // below so the log can include both pins' positions side by side.
+    int16_t selfSx = -9999, selfSy = -9999;
+    bool selfOnMap = false;
+    if (_gps && _gps->hasLocationFix()) {
+        SlippyMath::WorldPx swp = SlippyMath::lonLatToWorldPx(
+            _gps->longitude(), _gps->latitude(), _zoom);
+        int sxs = (int)(swp.x - ox);
+        int sys = (int)(swp.y - oy);
+        if (sxs >= 0 && sxs < VIEW_W && sys >= 0 && sys < VIEW_H) {
+            selfSx = (int16_t)sxs;
+            selfSy = (int16_t)sys;
+            selfOnMap = true;
+        }
+    }
+
+    // ---- Diagnostic: contact pin projection once per zoom change ----
+    // The user reported "contact pin looks in SC at z1-5, correct at z6+"
+    // with the self pin OK. Both pins share the same lonLatToWorldPx()
+    // math and the same viewportOriginWorldPx() so the only way one can
+    // be wrong and the other right is if the *inputs* differ. This log
+    // emits tile x/y + screen sx/sy (no raw lat/lon) for the first
+    // contact pin and (when available) the self pin so we can correlate
+    // the projection against the basemap tile's geographic content at
+    // that screen position. Fires at most once per zoom change. Kept
+    // out of LV_MAP_DEBUG gating so it runs in production builds by
+    // default — the per-zoom cadence keeps the serial line quiet.
+    if (_zoom != _contactPinLogZoom) {
+        _contactPinLogZoom = _zoom;
+        const Pin& p0 = pins[0];
+        int64_t wx = (int64_t)p0.sx + ox;
+        int64_t wy = (int64_t)p0.sy + oy;
+        int32_t tx = (int32_t)(wx / TILE_PX);
+        int32_t ty = (int32_t)(wy / TILE_PX);
+        if (selfOnMap) {
+            Serial.printf("[map] pin z=%d contact sx=%d sy=%d tx=%d ty=%d self sx=%d sy=%d ox=%lld oy=%lld cwx=%lld cwy=%lld nPins=%d\n",
+                          _zoom, (int)p0.sx, (int)p0.sy, (int)tx, (int)ty,
+                          (int)selfSx, (int)selfSy,
+                          (long long)ox, (long long)oy,
+                          (long long)_centerWorldX, (long long)_centerWorldY,
+                          nPins);
+        } else {
+            Serial.printf("[map] pin z=%d contact sx=%d sy=%d tx=%d ty=%d self=(no fix) ox=%lld oy=%lld cwx=%lld cwy=%lld nPins=%d\n",
+                          _zoom, (int)p0.sx, (int)p0.sy, (int)tx, (int)ty,
+                          (long long)ox, (long long)oy,
+                          (long long)_centerWorldX, (long long)_centerWorldY,
+                          nPins);
+        }
+    }
+
+    int poolIdx = 0;
+    for (int i = 0; i < nPins && poolIdx < MAX_CONTACT_MARKERS; ++i) {
+        if (pins[i].used) continue;
+
+        // Build a cluster around pin i — all un-used pins within STACK_PX
+        // (squared distance test) share one diamond + label stack.
+        int members[MAX_CONTACT_MARKERS];
+        int nMem = 0;
+        int32_t sumX = 0, sumY = 0;
+        for (int j = i; j < nPins; ++j) {
+            if (pins[j].used) continue;
+            int dx = (int)pins[j].sx - (int)pins[i].sx;
+            int dy = (int)pins[j].sy - (int)pins[i].sy;
+            if (dx * dx + dy * dy > STACK_PX * STACK_PX) continue;
+            pins[j].used = true;
+            members[nMem++] = j;
+            sumX += pins[j].sx;
+            sumY += pins[j].sy;
+        }
+        if (nMem == 0) continue;
+
+        const int16_t cx = (int16_t)(sumX / nMem);
+        const int16_t cy = (int16_t)(sumY / nMem);
+
+        // Nudge the diamond if the cluster sits on top of the self
+        // marker so the green dot stays readable — but ALWAYS along the
+        // true bearing from self → contact. A previous hard-coded
+        // (+8,-8) push forced every near contact to screen-NE of self,
+        // which at z1–z6 (metro pairs collapse inside STACK_PX≈14) made
+        // a true-SE peer look NE until zoom separated them past 14px.
+        int16_t pinX = cx, pinY = cy;
+        bool onSelf = false;
+        if (selfOnMap) {
+            int dx = (int)cx - (int)selfSx;
+            int dy = (int)cy - (int)selfSy;
+            if (dx * dx + dy * dy <= STACK_PX * STACK_PX) {
+                onSelf = true;
+                // Unit vector along true offset; if coincident, fall back
+                // to SE (+x,+y) which matches "south/east of me" default.
+                float len = sqrtf((float)(dx * dx + dy * dy));
+                float ux, uy;
+                if (len < 0.5f) {
+                    ux = 0.7071f;
+                    uy = 0.7071f;
+                } else {
+                    ux = (float)dx / len;
+                    uy = (float)dy / len;
+                }
+                const float NUDGE = 10.0f;
+                pinX = (int16_t)lroundf((float)selfSx + ux * NUDGE);
+                pinY = (int16_t)lroundf((float)selfSy + uy * NUDGE);
+                // Clip to content; if we hit an edge, flip that axis only.
+                if (pinX < 6)              pinX = (int16_t)(selfSx + (int)lroundf(fabsf(ux) * NUDGE));
+                if (pinX >= VIEW_W - 6)    pinX = (int16_t)(selfSx - (int)lroundf(fabsf(ux) * NUDGE));
+                if (pinY < 6)              pinY = (int16_t)(selfSy + (int)lroundf(fabsf(uy) * NUDGE));
+                if (pinY >= VIEW_H - 6)    pinY = (int16_t)(selfSy - (int)lroundf(fabsf(uy) * NUDGE));
+            }
+        }
+
+        ContactPinWidget& cp = _contactPins[poolIdx++];
+
+        // Diamond is centered on (pinX, pinY). The widget origin is
+        // top-left so we offset by half the diamond size (5 px).
+        if (cp.diamond) {
+            lv_obj_clear_flag(cp.diamond, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(cp.diamond, pinX - 5, pinY - 5);
+        }
+
+        // Hide leftover ribbon labels from a previous refresh in case
+        // this same pool slot is reused with a smaller cluster — the
+        // earlier "hide all" pass already did this once, but doing it
+        // again here per-cluster is cheap insurance.
+        for (int r = 0; r < MAX_RIBBON_LABELS; ++r) {
+            if (cp.ribbons[r]) lv_obj_add_flag(cp.ribbons[r], LV_OBJ_FLAG_HIDDEN);
+        }
+
+        if (nMem == 1) {
+            // Single-member cluster: 4-char label next to the diamond.
+            char lab[5];
+            shortLabel(*pins[members[0]].n, lab);
+            if (cp.badge) {
+                lv_obj_clear_flag(cp.badge, LV_OBJ_FLAG_HIDDEN);
+                // Place to the right of the diamond; flip left if it
+                // would clip. Same convention as Pro MapScreen.
+                int16_t bx = (int16_t)(pinX + 5 + 2);   // diamond half + 2 px gap
+                int16_t by = (int16_t)(pinY - 6);       // vertically centered
+                if (bx + 30 > VIEW_W) bx = (int16_t)(pinX - 5 - 2 - 30);
+                if (bx < 0) bx = 0;
+                if (by < 0) by = 0;
+                if (by + 12 > VIEW_H) by = (int16_t)(VIEW_H - 12);
+                lv_obj_set_pos(cp.badge, bx, by);
+                lv_label_set_text(cp.badge, lab);
+            }
+        } else {
+            // Multi-member cluster: count badge above the diamond +
+            // ribbon stack of labels to the side opposite self.
+            char badge[4];
+            if (nMem > 9) snprintf(badge, sizeof(badge), "9+");
+            else snprintf(badge, sizeof(badge), "%d", nMem);
+            if (cp.badge) {
+                lv_obj_clear_flag(cp.badge, LV_OBJ_FLAG_HIDDEN);
+                int16_t bx = (int16_t)(pinX - 15);
+                int16_t by = (int16_t)(pinY - 5 - 12 - 1);  // above diamond
+                if (by < 0) by = (int16_t)(pinY + 5 + 1);   // flip below
+                if (bx < 0) bx = 0;
+                if (bx + 30 > VIEW_W) bx = (int16_t)(VIEW_W - 30);
+                lv_obj_set_pos(cp.badge, bx, by);
+                lv_label_set_text(cp.badge, badge);
+            }
+
+            const int show = nMem < MAX_RIBBON_LABELS ? nMem : MAX_RIBBON_LABELS;
+            // Ribbons prefer the LEFT side if the pin sits in the right
+            // half of the screen, OR if the cluster was nudged because it
+            // sits on self (the diagonal nudge keeps the diamond on the
+            // upper-left of self, so left-side ribbons don't collide).
+            bool ribbonsLeft = onSelf ? true : (pinX > VIEW_W / 2);
+            int16_t ribbonX = ribbonsLeft
+                ? (int16_t)(pinX - 5 - 2 - 28)   // left of diamond
+                : (int16_t)(pinX + 5 + 2);       // right of diamond
+            int16_t ribbonY0 = (int16_t)(pinY - (show * 12) / 2);
+            if (ribbonY0 < 0) ribbonY0 = 0;
+
+            for (int k = 0; k < show; ++k) {
+                if (!cp.ribbons[k]) continue;
+                char lab[5];
+                shortLabel(*pins[members[k]].n, lab);
+                lv_obj_clear_flag(cp.ribbons[k], LV_OBJ_FLAG_HIDDEN);
+                int16_t by = (int16_t)(ribbonY0 + k * 12);
+                if (by + 12 > VIEW_H) break;
+                // Flip to right side if left would clip the edge.
+                int16_t bx = ribbonX;
+                if (bx < 0) bx = (int16_t)(pinX + 5 + 2);
+                if (bx + 28 > VIEW_W) bx = (int16_t)(VIEW_W - 28);
+                lv_obj_set_pos(cp.ribbons[k], bx, by);
+                lv_label_set_text(cp.ribbons[k], lab);
+            }
+            // "+N" overflow — only if there are MORE members than the
+            // ribbon stack can show. Stacks under the ribbonY0+show*12
+            // line; clipped if it would fall off the bottom.
+            if (nMem > show) {
+                char more[8];
+                snprintf(more, sizeof(more), "+%d", nMem - show);
+                int16_t by = (int16_t)(ribbonY0 + show * 12);
+                if (by + 12 <= VIEW_H && cp.ribbons[show]) {
+                    lv_obj_clear_flag(cp.ribbons[show], LV_OBJ_FLAG_HIDDEN);
+                    int16_t bx = ribbonX;
+                    if (bx < 0) bx = (int16_t)(pinX + 5 + 2);
+                    if (bx + 28 > VIEW_W) bx = (int16_t)(VIEW_W - 28);
+                    lv_obj_set_pos(cp.ribbons[show], bx, by);
+                    lv_label_set_text(cp.ribbons[show], more);
+                }
+            }
+        }
     }
 }
 
@@ -997,14 +1337,27 @@ void LvMapScreen::panBy(int32_t dxPx, int32_t dyPx) {
 }
 
 void LvMapScreen::clampCenterToWorld() {
-    // World is worldPx = TILE_PX * 2^zoom pixels square. Keep the viewport
-    // fully inside it where the world is big enough; otherwise (z0/z1 where
-    // the world is smaller than the 320x194 viewport) park the center on the
-    // world center so the tiles sit in the middle of the screen. Without
-    // this, zooming out (which scales the center by 2^-1) or panning past an
-    // edge left the center outside [0, worldPx) — every visible tile key was
-    // then out-of-world and the grid rendered gray/empty.
+    // World is worldPx = TILE_PX * 2^zoom pixels square.
+    //
+    // When follow-GPS is on, do NOT pull the center away from the true GPS
+    // world-px just to keep the viewport inside the world. That clamp was
+    // shifting the basemap under a correctly-projected self pin and made
+    // contact pins look directionally wrong (NE vs SE) at low zoom while
+    // z6+ (no clamp bite) looked fine. Allow empty margins past world edges
+    // instead; out-of-world tile slots are already hidden in rebuildTiles().
+    //
+    // Manual pan still clamps so the user can't lose the map entirely.
     const int64_t worldPx = (int64_t)TILE_PX << _zoom;
+
+    if (_followGPS) {
+        // Soft clamp: keep center inside the world square only (not
+        // viewport-inset). Pins and tiles stay geographically consistent.
+        if (_centerWorldX < 0) _centerWorldX = 0;
+        if (_centerWorldY < 0) _centerWorldY = 0;
+        if (_centerWorldX > worldPx) _centerWorldX = worldPx;
+        if (_centerWorldY > worldPx) _centerWorldY = worldPx;
+        return;
+    }
 
     if (worldPx > VIEW_W) {
         if (_centerWorldX < VIEW_HALF_W)            _centerWorldX = VIEW_HALF_W;
@@ -1042,7 +1395,16 @@ void LvMapScreen::zoomIn() {
     }
     clampCenterToWorld();
 
-    _followGPS = false;
+    // Zoom does NOT clear follow-GPS — manual pans still do (see panBy()).
+    // If we were following, snap the view back to the current fix so the
+    // marker stays centered after the zoom's world-px rescale. Without
+    // this, the marker drifted to the corner of the viewport at low zoom
+    // (clamps forced the center to the world midpoint while the marker
+    // kept projecting GPS lat/lon), making the self-pin look like it was
+    // in the wrong state.
+    if (_followGPS && _gps && _gps->hasLocationFix()) {
+        centerOnGpsIfAvailable();
+    }
     _noTilesToastPendingMs = 0;
     _noTilesToastShown = false;
 }
@@ -1060,7 +1422,13 @@ void LvMapScreen::zoomOut() {
     }
     clampCenterToWorld();
 
-    _followGPS = false;
+    // Zoom does NOT clear follow-GPS — manual pans still do (see panBy()).
+    // If we were following, snap the view back to the current fix so the
+    // marker stays centered after the zoom's world-px rescale. See
+    // zoomIn() for the rationale.
+    if (_followGPS && _gps && _gps->hasLocationFix()) {
+        centerOnGpsIfAvailable();
+    }
     _noTilesToastPendingMs = 0;
     _noTilesToastShown = false;
 }

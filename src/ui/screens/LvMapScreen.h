@@ -6,6 +6,7 @@
 
 class TileCache;
 class GPSManager;
+class AnnounceManager;
 
 // LvMapScreen — full pan/zoom offline slippy map.
 //
@@ -54,6 +55,10 @@ public:
     void setTileCache(TileCache* tc) { _tileCache = tc; }
     void setGPSManager(GPSManager* gps) { _gps = gps; }
     void setUIManager(class UIManager* mgr) { _ui = mgr; }
+    // Peer-on-map (rsDeck #64): announceManager is read-only here — the
+    // map screen consumes saved contacts that have lat/lon and renders
+    // diamond pins. We never mutate the manager.
+    void setAnnounceManager(AnnounceManager* am) { _am = am; }
 
     const char* title() const override { return "Map"; }
 
@@ -108,7 +113,7 @@ private:
     // Africa, which looked like an empty/ocean render.
     // If a GPS fix is available at first entry, onEnter() overrides this
     // by arming follow-GPS and centering on the fix (see _everCenteredOnGps).
-    static constexpr int DEFAULT_ZOOM = 1;
+    static constexpr int DEFAULT_ZOOM = 8;  // metro-scale default
     static constexpr int64_t DEFAULT_CENTER_WORLD_X = 256;  // z=1 world center
     static constexpr int64_t DEFAULT_CENTER_WORLD_Y = 256;  // z=1 world center
 
@@ -158,6 +163,9 @@ private:
     TileCache* _tileCache = nullptr;
     GPSManager* _gps = nullptr;
     class UIManager* _ui = nullptr;
+    // Peer-on-map (rsDeck #64): nullable. Updated set is small (saved +
+    // hasLocation). Refreshed every MARKER_REFRESH_MS via updateMarker().
+    class AnnounceManager* _am = nullptr;
 
     // ---- State (the 3 things from the design) ----
     int _zoom = DEFAULT_ZOOM;
@@ -169,6 +177,10 @@ private:
     // GPS fix when the user has explicitly panned away. Persists for
     // the life of the LvMapScreen object (never reset by destroyUI).
     bool _everCenteredOnGps = false;
+    // Track last _zoom logged via the contact-pin diagnostic so we only
+    // print once per zoom change (avoids per-tick spam). Negative = no
+    // log fired yet.
+    int _contactPinLogZoom = -1;
     // Timestamp at which the "no tiles for this area" toast becomes
     // eligible (set on each rebuildTiles() and on pan/zoom). 0 = not
     // pending. Used to delay the toast so we don't fire it during the
@@ -230,6 +242,31 @@ private:
     // GPS marker — separate obj, drawn on top of EVERYTHING (including
     // nav buttons) so a marker under a button still shows through.
     lv_obj_t* _marker = nullptr;
+
+    // ---- Peer-on-map (rsDeck #64) ----
+    // Pool of contact-pin widgets. Saved contacts with lat/lon get a
+    // diamond + optional badge + up to MAX_RIBBON_LABELS ribbon labels.
+    // The pool is sized MAX_CONTACT_MARKERS and reused across refreshes
+    // — hide everything, then assign up to that many cluster pins.
+    static constexpr int MAX_CONTACT_MARKERS = 16;
+    static constexpr int MAX_RIBBON_LABELS = 4;
+    // Cluster radius in screen px — mirrors the Pro MapScreen constant.
+    // Two saved contacts within STACK_PX of each other share one diamond.
+    static constexpr int STACK_PX = 14;
+    // Per-cluster pin visuals. `diamond` is always present; `badge` shows
+    // either a single 4-char label (single-member cluster) or a count
+    // (multi-member cluster); `ribbons` carry per-member labels stacked
+    // vertically beside the diamond.
+    struct ContactPinWidget {
+        lv_obj_t* diamond = nullptr;
+        lv_obj_t* badge = nullptr;
+        lv_obj_t* ribbons[MAX_RIBBON_LABELS] = {nullptr};
+    };
+    ContactPinWidget _contactPins[MAX_CONTACT_MARKERS];
+    void updateContactMarkers();
+    // Short 4-char label for a contact — name preferred, else hash prefix.
+    // Result is NUL-terminated at out[4] (out[5] buffer).
+    static void shortLabel(const struct DiscoveredNode& n, char out[5]);
 
     // ---- Input state ----
     bool _touchActive = false;

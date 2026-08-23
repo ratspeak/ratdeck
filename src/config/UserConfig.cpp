@@ -157,7 +157,20 @@ bool UserConfig::parseJson(const String& json) {
     _settings.adcDividerRatio = doc["adc_divider"] | BATTERY_ADC_DIVIDER_DEFAULT;
 
     _settings.gpsTimeEnabled     = doc["gps_time"]     | true;
-    _settings.gpsLocationEnabled = doc["gps_location"] | false;
+    _settings.gpsLocationEnabled = doc["gps_location"] | true;
+
+    // One-time GPS defaults migration: the v1 firmware shipped with
+    // gps_location=false as the default. Existing installs may have
+    // saved `gps_location=false` explicitly even though that was just
+    // the default — but we can't tell "user picked false" apart from
+    // "default false", so the conservative move is: the first time we
+    // load a config without the `gps_defaults_v2` marker, force both
+    // time sync and location to ON. The marker is then written on
+    // every subsequent save so the migration only runs once.
+    if (doc["gps_defaults_v2"].isNull()) {
+        _settings.gpsTimeEnabled = true;
+        _settings.gpsLocationEnabled = true;
+    }
     _settings.timezoneIdx        = doc["tz_idx"]       | 6;
     _settings.timezoneSet        = doc["tz_set"]       | false;
     _settings.use24HourTime      = doc["time_24h"]     | false;
@@ -248,6 +261,9 @@ String UserConfig::serializeToJson() {
 
     doc["gps_time"]     = _settings.gpsTimeEnabled;
     doc["gps_location"] = _settings.gpsLocationEnabled;
+    // Marker that the v2 GPS defaults migration has run — set every
+    // save so we only force-enable both GPS switches once per install.
+    doc["gps_defaults_v2"] = true;
     doc["tz_idx"]       = _settings.timezoneIdx;
     doc["tz_set"]       = _settings.timezoneSet;
     doc["time_24h"]     = _settings.use24HourTime;
