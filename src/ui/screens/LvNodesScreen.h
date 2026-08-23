@@ -15,6 +15,12 @@ public:
     // location as `LOC lat lon` and dispatch via LXMF (the screen knows
     // nothing about GPS/LXMF internals — main.cpp wires the deps).
     using SendGpsCallback = std::function<void(const std::string& peerHex)>;
+    // Back navigation — wired when Peers is opened "as an app" from the
+    // Apps tab (no tab bar visible). On Esc / back from the browse mode
+    // we invoke this callback so the caller can restore the tab bar and
+    // navigate to the Apps hub. Unset in legacy "tabbed Peers" mode
+    // (where the tab bar handles back itself).
+    using BackCallback = std::function<void()>;
 
     void createUI(lv_obj_t* parent) override;
     void destroyUI() override;
@@ -27,6 +33,7 @@ public:
     void setUIManager(class UIManager* ui) { _ui = ui; }
     void setUserConfig(UserConfig* cfg) { _cfg = cfg; }
     void setSendGpsCallback(SendGpsCallback cb) { _onSendGps = cb; }
+    void setBackCallback(BackCallback cb) { _onBack = cb; }
     bool handleLongPress() override;
 
     const char* title() const override { return "Peers"; }
@@ -54,6 +61,7 @@ private:
     UserConfig* _cfg = nullptr;
     NodeSelectedCallback _onSelect;
     SendGpsCallback _onSendGps;
+    BackCallback _onBack;
     bool _confirmDelete = false;
     bool _focusActive = false;
 

@@ -40,6 +40,7 @@
 #include "ui/screens/LvNameInputScreen.h"
 #include "ui/screens/LvTimezoneScreen.h"
 #include "ui/screens/LvDataCleanScreen.h"
+#include "ui/screens/LvAppsScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "storage/MessageStore.h"
@@ -133,6 +134,7 @@ LvSettingsScreen lvSettingsScreen;
 LvHelpOverlay lvHelpOverlay;
 LvQrOverlay lvQrOverlay;
 LvMapScreen lvMapScreen;
+LvAppsScreen lvAppsScreen;
 LvNameInputScreen lvNameInputScreen;
 LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
@@ -389,7 +391,10 @@ void onHotkeyNewMsg() {
         ui.lvTabBar().setActiveTab(LvTabBar::TAB_CONTACTS);
         ui.setScreen(&lvContactsScreen);
     } else {
-        ui.lvTabBar().setActiveTab(LvTabBar::TAB_NODES);
+        // No saved contacts — drop into the Peers tab so the user can
+        // pick an unsaved peer to message. Tab bar stays visible.
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_PEERS);
         ui.setScreen(&lvNodesScreen);
         ui.lvStatusBar().showToast("Pick a peer to message", 1200);
     }
@@ -402,9 +407,14 @@ void onHotkeyAnnounce() {
     manualAnnounce();
 }
 void onHotkeyMap() {
-    // Open via tab so the bar highlights correctly and onEnter captures
-    // previous tab for Esc. Ctrl+L remains a handy shortcut.
-    ui.lvTabBar().setActiveTab(LvTabBar::TAB_MAP);
+    // Map is no longer a primary tab — it's a tile inside the Apps hub.
+    // Open it as a full-screen app: hide the tab bar so the map reclaims
+    // the bottom 26 px, leave the status bar visible. The map screen
+    // draws its own BACK pill top-left (LvMapScreen::setAppMode(true))
+    // so the user has a discoverable way back to Apps. Esc / Del / BS
+    // still work via _onBack. Ctrl+L remains a handy shortcut.
+    ui.setTabBarVisible(false);
+    ui.setScreen(&lvMapScreen);
 }
 void onHotkeyAutoIface() {
     Serial.println("=== AUTOIFACE DUMP ===");
@@ -2086,7 +2096,10 @@ void setup() {
     });
 #endif
     lvHomeScreen.setPeersCallback([]() {
-        ui.lvTabBar().setActiveTab(LvTabBar::TAB_NODES);
+        // Peers is a primary tab (TAB_PEERS) again — direct jump, no
+        // indirection through Apps. Tab bar stays visible.
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_PEERS);
         ui.setScreen(&lvNodesScreen);
     });
 
@@ -2103,9 +2116,40 @@ void setup() {
     lvNodesScreen.setUserConfig(&userConfig);
     lvNodesScreen.setNodeSelectedCallback([](const std::string& peerHex) {
         lvMessageView.setPeerHex(peerHex);
+        ui.setTabBarVisible(true);
         ui.lvTabBar().setActiveTab(LvTabBar::TAB_MSGS);
         ui.setScreen(&lvMessageView);
     });
+    // Note: Peers is now a primary tab (TAB_PEERS). No setBackCallback —
+    // the user exits Peers via the tab bar like any other tab. The
+    // LvNodesScreen setBackCallback() API is retained for future use
+    // (e.g. embedding Peers somewhere else as an app).
+
+    // Apps tab — grid launcher. Map is the only live tile today;
+    // Notes / Files / GPS / Encrypt show "Coming soon" until those
+    // modules ship. Tapping Map opens the map full-screen (tab bar
+    // hidden, status bar stays). The map screen shows its own BACK pill
+    // (top-left, "< BACK") and routes Esc / Del / BS / ',' / '/' through
+    // _onBack so the user has both touch and keyboard exits.
+    lvAppsScreen.setUIManager(&ui);
+    lvAppsScreen.setOpenMapCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvMapScreen);
+    });
+    // Map always opens as an app (no primary tab for it). Configure the
+    // BACK callback once at startup so it survives across repeated
+    // setScreen() round-trips (each createUI() picks up _appMode).
+    // Returns to the Apps hub with the tab bar restored.
+    lvMapScreen.setAppMode(true);
+    lvMapScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+    // Placeholder tiles — let the screen surface "Coming soon" itself
+    // (it owns UIManager), so we don't need to wire callbacks here.
+    // If/when a tile becomes live, swap in a real callback above.
+
     // "Send GPS" action from the nodes screen action menu. Build the
     // `LOC lat lon` body from the current fix and dispatch via LXMF.
     // We only run when the user has GPS location tracking on AND has a
@@ -2233,11 +2277,20 @@ void setup() {
     lvTabScreens[LvTabBar::TAB_HOME]     = &lvHomeScreen;
     lvTabScreens[LvTabBar::TAB_CONTACTS] = &lvContactsScreen;
     lvTabScreens[LvTabBar::TAB_MSGS]     = &lvMessagesScreen;
-    lvTabScreens[LvTabBar::TAB_NODES]    = &lvNodesScreen;
-    lvTabScreens[LvTabBar::TAB_MAP]      = &lvMapScreen;
+    // TAB_PEERS is the Peers screen (was a tile before — promoted back
+    // to a tab to match Pro).
+    lvTabScreens[LvTabBar::TAB_PEERS]    = &lvNodesScreen;
+    lvTabScreens[LvTabBar::TAB_APPS]     = &lvAppsScreen;
+    // Note: Map is NOT in the tab array — it lives inside Apps. Open via
+    // lvAppsScreen.setOpenMapCallback or Ctrl+L (onHotkeyMap).
     lvTabScreens[LvTabBar::TAB_SETTINGS] = &lvSettingsScreen;
 
     ui.lvTabBar().setTabCallback([](int tab) {
+        // Selecting any primary tab restores the tab bar (it's always
+        // visible in tab mode). If the user is currently in app-style
+        // (e.g. Map open from Apps) and they tap a tab, this clears the
+        // flag so the bar reappears.
+        ui.setTabBarVisible(true);
         if (lvTabScreens[tab]) ui.setScreen(lvTabScreens[tab]);
     });
     bootTraceStage("screen-wiring");

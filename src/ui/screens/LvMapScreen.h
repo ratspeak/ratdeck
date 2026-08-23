@@ -2,6 +2,8 @@
 
 #include <climits>
 #include <cstdint>
+#include <functional>
+#include "ui/Theme.h"
 #include "ui/UIManager.h"
 
 class TileCache;
@@ -17,15 +19,25 @@ class AnnounceManager;
 //   * _followGPS    — true: re-center on each fresh GPS fix; any manual
 //                    pan/zoom clears it
 //
-// Layout: a 3x2 grid of 256x256 lv_img slots sized to cover the content area
-// (CONTENT_W=320, CONTENT_H=194). One buffer tile on the left edge and
-// one on the bottom edge handle panning near tile boundaries; LVGL's
-// parent clipping hides the rest. See rebuildTiles() for the exact
-// txMin/tyMin formula and the rationale for the bottom-buffer placement.
-// On entry the screen requests tiles for every visible slot whose key
-// changed since last refresh and re-arms the request every ~250 ms while
-// tiles remain missing — the TileCache's internal pump() (driven from
-// main.cpp's main loop) does the actual decode work off-screen.
+// Two display modes:
+//
+//   * Tab mode (_appMode=false, default):
+//       Layout: 320×194 content area (Theme::CONTENT_H). Tab bar visible.
+//       No BACK control — Esc / ',' / '/' returns to the previous tab
+//       captured by _prevTab.
+//
+//   * App mode (_appMode=true, set before opening from the Apps tile):
+//       Tab bar hidden → content area expands to 320×220 (full screen
+//       minus status bar). A BACK pill appears top-left so the user has a
+//       discoverable way back to Apps (Esc / Del / BS still work as a
+//       keyboard fallback). Map viewport shifts down to fill the area
+//       below the BACK strip — no empty bottom strip.
+//
+// Layout (each mode's per-mode constants at the top of the .cpp):
+//   * Tab mode: 3×2 tile grid covering CONTENT_W × CONTENT_H.
+//   * App mode: 3×2 tile grid covering CONTENT_W × (CONTENT_W-(header))
+//     positioned at (0, kAppHeaderH + kAppMapPad) in content-relative
+//     coordinates, below the BACK strip.
 //
 // Inputs:
 //   * Trackball move  → pan (deltas * PAN_SPEED into _centerWorldPx)
@@ -36,7 +48,11 @@ class AnnounceManager;
 //   * Touch drag      → pan, trackball-equivalent math
 //   * Double-tap      → zoom in
 //   * 'c' / 'C'       → re-arm follow-GPS (snap to current fix)
-//   * Esc / ',' / '/' → return to previous tab (set via onEnter())
+//   * Esc / Del / BS  → app mode: invoke _onBack (returns to Apps).
+//                       Tab mode: return to _prevTab via the tab callback.
+//   * ',' / '/'       → app mode: invoke _onBack. Tab mode: return to
+//                       _prevTab (don't accidentally advance the tab
+//                       cycle while the user is on the map).
 //
 // The screen costs ~0 bytes of LVGL widgets when not visible — all UI is
 // built in createUI() and torn down by UIManager's lv_obj_clean() when
@@ -60,6 +76,22 @@ public:
     // diamond pins. We never mutate the manager.
     void setAnnounceManager(AnnounceManager* am) { _am = am; }
 
+    // App-mode display. When true:
+    //   * Tab bar is hidden (caller drives this via UIManager)
+    //   * createUI() shows a BACK pill top-left
+    //   * Map viewport expands to fill the content area minus the BACK
+    //     strip (no empty bottom strip from the hidden tab bar)
+    //   * Esc / Del / BS / ',' / '/' route through _onBack instead of
+    //     the tab-callback path
+    // Must be set BEFORE setScreen() so createUI() picks it up. Defaults
+    // to false (legacy tab-mode display).
+    void setAppMode(bool appMode) { _appMode = appMode; }
+    bool appMode() const { return _appMode; }
+    // Back navigation — wired only for app-mode (where the BACK pill
+    // needs a callback). In tab mode the tab-callback handles back.
+    using BackCallback = std::function<void()>;
+    void setBackCallback(BackCallback cb) { _onBack = cb; }
+
     const char* title() const override { return "Map"; }
 
 private:
@@ -70,10 +102,39 @@ private:
     static constexpr int GRID_ROWS = 2;
     static constexpr int SLOT_COUNT = GRID_COLS * GRID_ROWS;
     static constexpr int TILE_PX = 256;
-    static constexpr int VIEW_W = 320;       // Theme::CONTENT_W
-    static constexpr int VIEW_H = 194;       // Theme::CONTENT_H = SCREEN_H-STATUS_BAR_H-TAB_BAR_H
-    static constexpr int VIEW_HALF_W = VIEW_W / 2;       // 160
-    static constexpr int VIEW_HALF_H = VIEW_H / 2;       // 97
+    static constexpr int VIEW_W = 320;       // Theme::CONTENT_W (unchanged across modes)
+
+    // App-mode chrome dimensions — referenced in app-mode code paths only.
+    // Sized to mirror the Pro reference (kBackH=22 + kBackPad=2 = 24-px
+    // top strip). The BACK widget itself is kAppHeaderH-4=18 px tall,
+    // centered vertically inside the 22-px strip with 2 px pads.
+    static constexpr int kAppHeaderH = 22;
+    static constexpr int kAppMapPad  = 2;
+    static constexpr int kBackBtnX   = 4;
+    static constexpr int kBackBtnY   = 2;
+    static constexpr int kBackBtnW   = 64;
+    static constexpr int kBackBtnH   = kAppHeaderH - 4;   // 18
+
+    // VIEW_W stays 320 across modes. VIEW_H / VIEW_HALF_H are now
+    // runtime-dispatched: tab mode keeps the legacy 194/97; app mode
+    // uses the full content area (220) minus the BACK strip (24) → 196/98.
+    int viewH() const {
+        return _appMode
+            ? (Theme::SCREEN_H - Theme::STATUS_BAR_H - kAppHeaderH - kAppMapPad)  // 196
+            : Theme::CONTENT_H;                                                    // 194
+    }
+    int viewHalfH() const { return viewH() / 2; }
+    int viewHalfW() const { return VIEW_W / 2; }   // 160
+    // Content-area y where the map viewport starts. Tab mode → 0 (the
+    // map covers the full content area from the top). App mode →
+    // kAppHeaderH + kAppMapPad (the BACK strip + gap, so the map sits
+    // below it). HUDs, nav buttons, GPS marker, and contact pins use
+    // this to translate their map-local (0..viewH) coordinates into
+    // content-area coordinates when their widgets are parented to the
+    // content area itself (not to _mapContainer).
+    int mapOriginY() const {
+        return _appMode ? (kAppHeaderH + kAppMapPad) : 0;
+    }
 
     // ---- Interaction tunables ----
     // 8 px per trackball-tick matches the home-screen "cursor speed 3"
@@ -167,6 +228,11 @@ private:
     // hasLocation). Refreshed every MARKER_REFRESH_MS via updateMarker().
     class AnnounceManager* _am = nullptr;
 
+    // ---- Display mode ----
+    // See class header. Defaults to false so legacy callers (none today,
+    // but kept for safety) get the original tab-mode layout.
+    bool _appMode = false;
+
     // ---- State (the 3 things from the design) ----
     int _zoom = DEFAULT_ZOOM;
     int64_t _centerWorldX = DEFAULT_CENTER_WORLD_X;
@@ -205,6 +271,17 @@ private:
     lv_obj_t* _hudGps = nullptr;
     lv_obj_t* _hudFollow = nullptr;
 
+    // App-mode BACK pill — top-left, sized to fit inside kAppHeaderH=22
+    // with a 2-px top pad. Holds "< BACK" label. Wires its own CLICKED
+    // handler so touch works directly (no manual touch-handler plumbing
+    // needed). Cached screen-absolute bounds feed isTouchOnBack() so
+    // the manual pan/double-tap logic in refreshUI() doesn't fire over
+    // the pill (mirrors the nav-button suppression pattern).
+    lv_obj_t* _backBtn = nullptr;
+    lv_obj_t* _backLbl = nullptr;
+    int16_t _backBtnX1 = 0, _backBtnY1 = 0, _backBtnX2 = 0, _backBtnY2 = 0;
+    BackCallback _onBack;
+
     // ---- Nav overlay (D-pad + zoom) — small buttons over the map so the
     // user has a discoverable pan/zoom alternative to the trackball and
     // touch-drag. Six buttons total: 4 directional arrows + 2 zoom. Wire
@@ -231,12 +308,13 @@ private:
     int16_t _navBtnY1[NAV_BTN_COUNT] = {0};
     int16_t _navBtnX2[NAV_BTN_COUNT] = {0};
     int16_t _navBtnY2[NAV_BTN_COUNT] = {0};
+    bool isTouchOnNavButton(int16_t tx, int16_t ty) const;
+    bool isTouchOnBack(int16_t tx, int16_t ty) const;
     // Set true when the current touch-down was inside a nav button; the
     // manual pan/double-tap handler skips pan and double-tap detection
     // while this is set, so tapping a button doesn't accidentally pan
     // or trigger a double-tap zoom.
     bool _touchConsumedByNav = false;
-    bool isTouchOnNavButton(int16_t tx, int16_t ty) const;
     void rebuildNavOverlay();
 
     // GPS marker — separate obj, drawn on top of EVERYTHING (including

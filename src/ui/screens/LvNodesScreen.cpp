@@ -537,6 +537,19 @@ bool LvNodesScreen::handleLongPress() {
 bool LvNodesScreen::handleKey(const KeyEvent& event) {
     if (!_am) return false;
 
+    // --- Back navigation (app-mode only) ---
+    // Only active when no modal overlay is consuming keys. When the
+    // caller wired a back-callback (Peers opened as an Apps tile), Esc
+    // / back hands control back so the caller can restore the tab bar
+    // and return to the Apps hub. If no callback is wired, leave the
+    // key for the global tab-cycle / tab-bar to handle.
+    if (_actionState == NodeAction::BROWSE && !_confirmDelete && _onBack) {
+        if (event.character == 0x1B || event.del || event.character == 0x08) {
+            _onBack();
+            return true;
+        }
+    }
+
     // --- Focus activation guard (only in browse mode) ---
     if (_actionState == NodeAction::BROWSE && !_confirmDelete &&
         !_focusActive && (event.up || event.down || event.enter)) {

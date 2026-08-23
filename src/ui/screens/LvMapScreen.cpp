@@ -146,14 +146,17 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
     lv_obj_set_style_border_width(parent, 0, 0);
     lv_obj_clear_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Tile container — sits at (0,0) of the content area, full size.
-    // We don't enable parent-level clipping here because the content
-    // parent itself clips (UIManager's _lvContent is the boundary), and
-    // each tile img renders normally outside its own bounds (LVGL clips
-    // at the rendering stage).
+    // Tile container — in tab mode sits at (0,0) covering the full
+    // 320×194 content area; in app mode shifts down by kAppHeaderH +
+    // kAppMapPad to make room for the BACK pill strip. We don't enable
+    // parent-level clipping here because the content parent itself
+    // clips (UIManager's _lvContent is the boundary), and each tile img
+    // renders normally outside its own bounds (LVGL clips at the
+    // rendering stage).
+    const int mapY = _appMode ? (kAppHeaderH + kAppMapPad) : 0;
     _mapContainer = lv_obj_create(parent);
-    lv_obj_set_size(_mapContainer, VIEW_W, VIEW_H);
-    lv_obj_set_pos(_mapContainer, 0, 0);
+    lv_obj_set_size(_mapContainer, VIEW_W, viewH());
+    lv_obj_set_pos(_mapContainer, 0, mapY);
     lv_obj_set_style_bg_opa(_mapContainer, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(_mapContainer, 0, 0);
     lv_obj_set_style_pad_all(_mapContainer, 0, 0);
@@ -189,13 +192,26 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
     }
 
     // ---- HUD (drawn on top of tiles) ----
-    _hudZoom = makeHudLabel(parent, kHudZoomX, kHudZoomY, 60, 14,
+    // All four HUD labels sit at the corners of the MAP area (not the
+    // content area) so they follow the map when the viewport expands in
+    // app mode. Tab mode previously anchored them at content-relative y=2
+    // (top) and y=174 (bottom) — those numbers were fine when mapY=0,
+    // but in app mode the map sits at y=24..220 so the labels must
+    // shift down by mapY (24) to remain on the map. Concretely:
+    //   tab : hudTopY=2,   hudBotY=174 (kHudMapsetY/kHudGpsY constants)
+    //   app : hudTopY=26,  hudBotY=200 (=mapY+viewH()-20)
+    // The constants kHudZoomY/kHudFollowY/kHudMapsetY/kHudGpsY are kept
+    // for tab-mode tests but no longer used at runtime; the formulas
+    // below are the single source of truth.
+    const int hudTopY = mapY + 2;
+    const int hudBotY = mapY + viewH() - 20;
+    _hudZoom = makeHudLabel(parent, kHudZoomX, hudTopY, 60, 14,
                             &lv_font_rsdeck_10, Theme::TEXT_PRIMARY, "z-");
-    _hudMapset = makeHudLabel(parent, kHudMapsetX, kHudMapsetY, 180, 14,
+    _hudMapset = makeHudLabel(parent, kHudMapsetX, hudBotY, 180, 14,
                               &lv_font_rsdeck_10, Theme::TEXT_MUTED, MAPSET_NAME);
-    _hudGps = makeHudLabel(parent, kHudGpsX, kHudGpsY, 120, 14,
+    _hudGps = makeHudLabel(parent, kHudGpsX, hudBotY, 120, 14,
                            &lv_font_rsdeck_10, Theme::TEXT_MUTED, "GPS --");
-    _hudFollow = makeHudLabel(parent, kHudFollowX, kHudFollowY, 70, 14,
+    _hudFollow = makeHudLabel(parent, kHudFollowX, hudTopY, 70, 14,
                               &lv_font_rsdeck_10, Theme::TEXT_SECONDARY,
                               _followGPS ? "FOLLOW" : "MANUAL");
 
@@ -267,6 +283,17 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
     // ---- Nav overlay (D-pad + zoom) ----
     // AFTER contact pins so controls stay discoverable above peer pins.
     // GPS marker is created last (below) so self still wins z-order.
+    // The cluster sits in the top-right of the MAP area, offset by
+    // mapY. kNavOriginY=22 was tuned for tab mode (mapY=0); in app mode
+    // mapY=24 so the cluster shifts down to y=46 and stays just below
+    // the BACK pill strip with a small gap.
+    const int navOriginY = mapY + kNavOriginY;
+    const int navRow0 = navOriginY;
+    const int navRow1 = navOriginY + 1 * (kNavBtnH + kNavBtnGap);
+    const int navRow2 = navOriginY + 2 * (kNavBtnH + kNavBtnGap);
+    const int navRow3 = navOriginY + 3 * (kNavBtnH + kNavBtnGap);
+    const int navRow4 = navOriginY + 4 * (kNavBtnH + kNavBtnGap);
+
     auto makeNavBtn = [&](int idx, int x, int y, const char* sym, lv_event_cb_t cb) {
         lv_obj_t* btn = lv_btn_create(parent);
         lv_obj_set_size(btn, kNavBtnW, kNavBtnH);
@@ -295,27 +322,27 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
         return btn;
     };
     // Sign convention: LEFT moves viewport center left (same as trackball).
-    makeNavBtn(NAV_BTN_LEFT,  kNavColLeft,   kNavRow1, LV_SYMBOL_LEFT,  [](lv_event_t* e){
+    makeNavBtn(NAV_BTN_LEFT,  kNavColLeft,   navRow1, LV_SYMBOL_LEFT,  [](lv_event_t* e){
         auto* self = (LvMapScreen*)lv_event_get_user_data(e);
         self->panBy(-32, 0); self->rebuildTiles();
     });
-    makeNavBtn(NAV_BTN_UP,    kNavColCenter, kNavRow0, LV_SYMBOL_UP,    [](lv_event_t* e){
+    makeNavBtn(NAV_BTN_UP,    kNavColCenter, navRow0, LV_SYMBOL_UP,    [](lv_event_t* e){
         auto* self = (LvMapScreen*)lv_event_get_user_data(e);
         self->panBy(0, -32); self->rebuildTiles();
     });
-    makeNavBtn(NAV_BTN_RIGHT, kNavColRight,  kNavRow1, LV_SYMBOL_RIGHT, [](lv_event_t* e){
+    makeNavBtn(NAV_BTN_RIGHT, kNavColRight,  navRow1, LV_SYMBOL_RIGHT, [](lv_event_t* e){
         auto* self = (LvMapScreen*)lv_event_get_user_data(e);
         self->panBy( 32, 0); self->rebuildTiles();
     });
-    makeNavBtn(NAV_BTN_DOWN,  kNavColCenter, kNavRow2, LV_SYMBOL_DOWN,  [](lv_event_t* e){
+    makeNavBtn(NAV_BTN_DOWN,  kNavColCenter, navRow2, LV_SYMBOL_DOWN,  [](lv_event_t* e){
         auto* self = (LvMapScreen*)lv_event_get_user_data(e);
         self->panBy(0,  32); self->rebuildTiles();
     });
-    makeNavBtn(NAV_BTN_ZIN,   kNavColCenter, kNavRow3, LV_SYMBOL_PLUS,  [](lv_event_t* e){
+    makeNavBtn(NAV_BTN_ZIN,   kNavColCenter, navRow3, LV_SYMBOL_PLUS,  [](lv_event_t* e){
         auto* self = (LvMapScreen*)lv_event_get_user_data(e);
         self->zoomIn(); self->rebuildTiles();
     });
-    makeNavBtn(NAV_BTN_ZOUT,  kNavColCenter, kNavRow4, LV_SYMBOL_MINUS, [](lv_event_t* e){
+    makeNavBtn(NAV_BTN_ZOUT,  kNavColCenter, navRow4, LV_SYMBOL_MINUS, [](lv_event_t* e){
         auto* self = (LvMapScreen*)lv_event_get_user_data(e);
         self->zoomOut(); self->rebuildTiles();
     });
@@ -334,6 +361,50 @@ void LvMapScreen::createUI(lv_obj_t* parent) {
     lv_obj_set_style_shadow_width(_marker, 0, 0);
     lv_obj_add_flag(_marker, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(_marker, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    // ---- App-mode BACK pill (only when _appMode) ----
+    // Top-left, just below the status bar. Mirrors the Pro MapScreen
+    // "<- BACK" pill. Owns its CLICKED handler so a touch or Enter fires
+    // _onBack directly; the manual touch handler in refreshUI() also
+    // suppresses pan/double-tap when the touch-down lands on the pill
+    // (via isTouchOnBack), so neither path can pan while the user is
+    // trying to back out.
+    if (_appMode) {
+        _backBtn = lv_btn_create(parent);
+        lv_obj_set_size(_backBtn, kBackBtnW, kBackBtnH);
+        lv_obj_set_pos(_backBtn, kBackBtnX, kBackBtnY);
+        lv_obj_add_style(_backBtn, LvTheme::styleBtn(), 0);
+        lv_obj_add_style(_backBtn, LvTheme::styleBtnPressed(), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(_backBtn, LV_OPA_70, 0);
+        lv_obj_set_style_border_color(_backBtn, lv_color_hex(Theme::BORDER), 0);
+        lv_obj_set_style_border_width(_backBtn, 1, 0);
+        lv_obj_set_style_radius(_backBtn, 3, 0);
+        lv_obj_set_style_pad_all(_backBtn, 0, 0);
+        lv_obj_set_style_shadow_width(_backBtn, 0, 0);
+        lv_obj_clear_flag(_backBtn, LV_OBJ_FLAG_SCROLLABLE);
+        _backLbl = lv_label_create(_backBtn);
+        lv_obj_set_style_text_font(_backLbl, &lv_font_rsdeck_10, 0);
+        lv_obj_set_style_text_color(_backLbl, lv_color_hex(Theme::ACCENT), 0);
+        lv_obj_set_style_text_color(_backLbl, lv_color_hex(Theme::PRIMARY), LV_STATE_PRESSED);
+        lv_label_set_text(_backLbl, "< BACK");
+        lv_obj_center(_backLbl);
+        lv_obj_add_event_cb(_backBtn, [](lv_event_t* e) {
+            auto* self = (LvMapScreen*)lv_event_get_user_data(e);
+            if (self->_onBack) self->_onBack();
+        }, LV_EVENT_CLICKED, this);
+
+        // Cache screen-absolute bounds for the manual touch-handler bail
+        // (refreshUI() reads raw touch coords and shouldn't treat a touch
+        // on the BACK pill as a pan / double-tap on the map).
+        _backBtnX1 = kBackBtnX;
+        _backBtnY1 = kBackBtnY + Theme::STATUS_BAR_H;
+        _backBtnX2 = kBackBtnX + kBackBtnW - 1;
+        _backBtnY2 = kBackBtnY + kBackBtnH - 1 + Theme::STATUS_BAR_H;
+    } else {
+        _backBtn = nullptr;
+        _backLbl = nullptr;
+        _backBtnX1 = _backBtnY1 = _backBtnX2 = _backBtnY2 = 0;
+    }
 
     // Initial layout. Note: onEnter() (called by UIManager right after
     // createUI() returns) is the canonical place for "first entry" work
@@ -363,6 +434,9 @@ void LvMapScreen::destroyUI() {
     _hudMapset = nullptr;
     _hudGps = nullptr;
     _hudFollow = nullptr;
+    _backBtn = nullptr;
+    _backLbl = nullptr;
+    _backBtnX1 = _backBtnY1 = _backBtnX2 = _backBtnY2 = 0;
     for (int i = 0; i < NAV_BTN_COUNT; ++i) {
         _navBtns[i] = nullptr;
     }
@@ -487,8 +561,11 @@ void LvMapScreen::refreshUI() {
             // on a button. The LVGL CLICKED event will fire on release
             // (button handler does the actual pan/zoom); we just need to
             // keep our manual pan/double-tap logic out of the way for
-            // the duration of this touch.
-            _touchConsumedByNav = isTouchOnNavButton(tx, ty);
+            // the duration of this touch. App-mode BACK pill uses the
+            // same suppression pattern (its CLICKED handler does the
+            // back navigation).
+            _touchConsumedByNav = isTouchOnNavButton(tx, ty) ||
+                                  isTouchOnBack(tx, ty);
             if (_touchConsumedByNav) {
                 // Skip double-tap arming so a quick tap on a button
                 // doesn't count toward a future map-screen double-tap.
@@ -638,8 +715,14 @@ bool LvMapScreen::handleKey(const KeyEvent& event) {
         return true;
     }
 
-    // Esc / back — return to previous tab.
+    // Esc / back — app mode fires the back callback (returns to Apps).
+    // Tab mode falls through to the legacy _prevTab path so Esc / Del /
+    // BS behaves identically to before the app-mode work.
     if (event.character == 0x1B || event.del || event.character == 0x08) {
+        if (_appMode) {
+            if (_onBack) _onBack();
+            return true;
+        }
         if (_ui) {
             _ui->lvTabBar().setActiveTab(_prevTab);
             // setActiveTab triggers _tabCb which routes via lvTabScreens
@@ -649,12 +732,15 @@ bool LvMapScreen::handleKey(const KeyEvent& event) {
         return true;
     }
 
-    // '/' / ',' — normally global tab cycle (see main.cpp:2248-2260),
-    // but we intercept and route back to the previous tab so the user
-    // doesn't accidentally leave the map screen and land somewhere
-    // unrelated.
+    // '/' / ',' — app mode also fires _onBack (the user is on the map
+    // full-screen and shouldn't be able to advance the tab cycle from
+    // here). Tab mode: legacy _prevTab restore.
     if (event.character == ',' || event.character == '/') {
-        if (_ui) _ui->lvTabBar().setActiveTab(_prevTab);
+        if (_appMode) {
+            if (_onBack) _onBack();
+        } else if (_ui) {
+            _ui->lvTabBar().setActiveTab(_prevTab);
+        }
         return true;
     }
 
@@ -672,8 +758,8 @@ bool LvMapScreen::handleLongPress() {
 // ---- Tile grid ----
 
 void LvMapScreen::viewportOriginWorldPx(int64_t& outX, int64_t& outY) const {
-    outX = _centerWorldX - VIEW_HALF_W;
-    outY = _centerWorldY - VIEW_HALF_H;
+    outX = _centerWorldX - viewHalfW();
+    outY = _centerWorldY - viewHalfH();
 }
 
 void LvMapScreen::tileScreenPos(int32_t tx, int32_t ty,
@@ -758,7 +844,7 @@ void LvMapScreen::rebuildTiles() {
     int32_t visRowMax = tl.y;
     {
         int64_t cx = ox + VIEW_W;
-        int64_t cy = oy + VIEW_H;
+        int64_t cy = oy + viewH();
         SlippyMath::TileXY br = SlippyMath::worldPxToTile({cx, cy});
         visColMax = br.x;
         visRowMax = br.y;
@@ -955,6 +1041,14 @@ bool LvMapScreen::isTouchOnNavButton(int16_t tx, int16_t ty) const {
     return false;
 }
 
+bool LvMapScreen::isTouchOnBack(int16_t tx, int16_t ty) const {
+    // _backBtn is null in tab mode (no pill); bounds are zero-initialized
+    // so the rect test is trivially false. Cheap enough to call every tick.
+    if (!_backBtn) return false;
+    return tx >= _backBtnX1 && tx <= _backBtnX2 &&
+           ty >= _backBtnY1 && ty <= _backBtnY2;
+}
+
 void LvMapScreen::rebuildNavOverlay() {
     // Currently a no-op — button layout is fixed and doesn't depend on
     // zoom/pan/theme. Kept for future use (e.g. hiding the overlay in
@@ -1003,11 +1097,16 @@ void LvMapScreen::updateMarker() {
     // outside the viewport, hide it — there's no value in showing a dot
     // that's not where the user expects it.
     if (sx < -kMarkerSize || sx >= VIEW_W ||
-        sy < -kMarkerSize || sy >= VIEW_H) {
+        sy < -kMarkerSize || sy >= viewH()) {
         lv_obj_add_flag(_marker, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_clear_flag(_marker, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(_marker, sx, sy);
+        // _marker is parented to the content area, not to _mapContainer,
+        // so we have to add mapOriginY() to translate the map-local
+        // projection (sx, sy ∈ [0..VIEW_W] × [0..viewH()]) into a
+        // content-area coord. Tab mode: mapOriginY()=0 → unchanged.
+        // App mode: mapOriginY()=24 → marker shifts down with the map.
+        lv_obj_set_pos(_marker, sx, sy + mapOriginY());
     }
 
     if (_hudGps) {
@@ -1087,7 +1186,7 @@ void LvMapScreen::updateContactMarkers() {
         SlippyMath::WorldPx wp = SlippyMath::lonLatToWorldPx(n.lon, n.lat, _zoom);
         int sx = (int)(wp.x - ox);
         int sy = (int)(wp.y - oy);
-        if (sx < 0 || sx >= VIEW_W || sy < 0 || sy >= VIEW_H) continue;
+        if (sx < 0 || sx >= VIEW_W || sy < 0 || sy >= viewH()) continue;
         pins[nPins].sx = (int16_t)sx;
         pins[nPins].sy = (int16_t)sy;
         pins[nPins].n = &n;
@@ -1107,7 +1206,7 @@ void LvMapScreen::updateContactMarkers() {
             _gps->longitude(), _gps->latitude(), _zoom);
         int sxs = (int)(swp.x - ox);
         int sys = (int)(swp.y - oy);
-        if (sxs >= 0 && sxs < VIEW_W && sys >= 0 && sys < VIEW_H) {
+        if (sxs >= 0 && sxs < VIEW_W && sys >= 0 && sys < viewH()) {
             selfSx = (int16_t)sxs;
             selfSy = (int16_t)sys;
             selfOnMap = true;
@@ -1203,7 +1302,7 @@ void LvMapScreen::updateContactMarkers() {
                 if (pinX < 6)              pinX = (int16_t)(selfSx + (int)lroundf(fabsf(ux) * NUDGE));
                 if (pinX >= VIEW_W - 6)    pinX = (int16_t)(selfSx - (int)lroundf(fabsf(ux) * NUDGE));
                 if (pinY < 6)              pinY = (int16_t)(selfSy + (int)lroundf(fabsf(uy) * NUDGE));
-                if (pinY >= VIEW_H - 6)    pinY = (int16_t)(selfSy - (int)lroundf(fabsf(uy) * NUDGE));
+                if (pinY >= viewH() - 6)   pinY = (int16_t)(selfSy - (int)lroundf(fabsf(uy) * NUDGE));
             }
         }
 
@@ -1211,9 +1310,12 @@ void LvMapScreen::updateContactMarkers() {
 
         // Diamond is centered on (pinX, pinY). The widget origin is
         // top-left so we offset by half the diamond size (5 px).
+        // Same +mapOriginY() pattern as _marker: contact-pin widgets
+        // live on the content parent so the projection's map-local Y
+        // needs the content-area offset.
         if (cp.diamond) {
             lv_obj_clear_flag(cp.diamond, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_pos(cp.diamond, pinX - 5, pinY - 5);
+            lv_obj_set_pos(cp.diamond, pinX - 5, pinY - 5 + mapOriginY());
         }
 
         // Hide leftover ribbon labels from a previous refresh in case
@@ -1237,8 +1339,11 @@ void LvMapScreen::updateContactMarkers() {
                 if (bx + 30 > VIEW_W) bx = (int16_t)(pinX - 5 - 2 - 30);
                 if (bx < 0) bx = 0;
                 if (by < 0) by = 0;
-                if (by + 12 > VIEW_H) by = (int16_t)(VIEW_H - 12);
-                lv_obj_set_pos(cp.badge, bx, by);
+                if (by + 12 > viewH()) by = (int16_t)(viewH() - 12);
+                // +mapOriginY(): badge widgets live on the content parent
+                // (not on _mapContainer) so we translate map-local by to
+                // content-area by. Tab mode adds 0 (unchanged).
+                lv_obj_set_pos(cp.badge, bx, by + mapOriginY());
                 lv_label_set_text(cp.badge, lab);
             }
         } else {
@@ -1254,7 +1359,7 @@ void LvMapScreen::updateContactMarkers() {
                 if (by < 0) by = (int16_t)(pinY + 5 + 1);   // flip below
                 if (bx < 0) bx = 0;
                 if (bx + 30 > VIEW_W) bx = (int16_t)(VIEW_W - 30);
-                lv_obj_set_pos(cp.badge, bx, by);
+                lv_obj_set_pos(cp.badge, bx, by + mapOriginY());
                 lv_label_set_text(cp.badge, badge);
             }
 
@@ -1276,12 +1381,12 @@ void LvMapScreen::updateContactMarkers() {
                 shortLabel(*pins[members[k]].n, lab);
                 lv_obj_clear_flag(cp.ribbons[k], LV_OBJ_FLAG_HIDDEN);
                 int16_t by = (int16_t)(ribbonY0 + k * 12);
-                if (by + 12 > VIEW_H) break;
+                if (by + 12 > viewH()) break;
                 // Flip to right side if left would clip the edge.
                 int16_t bx = ribbonX;
                 if (bx < 0) bx = (int16_t)(pinX + 5 + 2);
                 if (bx + 28 > VIEW_W) bx = (int16_t)(VIEW_W - 28);
-                lv_obj_set_pos(cp.ribbons[k], bx, by);
+                lv_obj_set_pos(cp.ribbons[k], bx, by + mapOriginY());
                 lv_label_set_text(cp.ribbons[k], lab);
             }
             // "+N" overflow — only if there are MORE members than the
@@ -1291,12 +1396,12 @@ void LvMapScreen::updateContactMarkers() {
                 char more[8];
                 snprintf(more, sizeof(more), "+%d", nMem - show);
                 int16_t by = (int16_t)(ribbonY0 + show * 12);
-                if (by + 12 <= VIEW_H && cp.ribbons[show]) {
+                if (by + 12 <= viewH() && cp.ribbons[show]) {
                     lv_obj_clear_flag(cp.ribbons[show], LV_OBJ_FLAG_HIDDEN);
                     int16_t bx = ribbonX;
                     if (bx < 0) bx = (int16_t)(pinX + 5 + 2);
                     if (bx + 28 > VIEW_W) bx = (int16_t)(VIEW_W - 28);
-                    lv_obj_set_pos(cp.ribbons[show], bx, by);
+                    lv_obj_set_pos(cp.ribbons[show], bx, by + mapOriginY());
                     lv_label_set_text(cp.ribbons[show], more);
                 }
             }
@@ -1360,15 +1465,15 @@ void LvMapScreen::clampCenterToWorld() {
     }
 
     if (worldPx > VIEW_W) {
-        if (_centerWorldX < VIEW_HALF_W)            _centerWorldX = VIEW_HALF_W;
-        if (_centerWorldX > worldPx - VIEW_HALF_W)  _centerWorldX = worldPx - VIEW_HALF_W;
+        if (_centerWorldX < viewHalfW())           _centerWorldX = viewHalfW();
+        if (_centerWorldX > worldPx - viewHalfW()) _centerWorldX = worldPx - viewHalfW();
     } else {
         _centerWorldX = worldPx / 2;
     }
 
-    if (worldPx > VIEW_H) {
-        if (_centerWorldY < VIEW_HALF_H)            _centerWorldY = VIEW_HALF_H;
-        if (_centerWorldY > worldPx - VIEW_HALF_H)  _centerWorldY = worldPx - VIEW_HALF_H;
+    if (worldPx > viewH()) {
+        if (_centerWorldY < viewHalfH())           _centerWorldY = viewHalfH();
+        if (_centerWorldY > worldPx - viewHalfH()) _centerWorldY = worldPx - viewHalfH();
     } else {
         _centerWorldY = worldPx / 2;
     }

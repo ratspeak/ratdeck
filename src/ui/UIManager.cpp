@@ -65,11 +65,14 @@ void UIManager::setScreen(LvScreen* screen) {
 
     _currentLvScreen = screen;
 
-    // Show LVGL layers
+    // Show LVGL layers. Status bar always shows in normal mode; tab bar
+    // visibility is governed by setTabBarVisible(). This split lets
+    // "app-style" screens (Peers opened from the Apps tab) keep the
+    // status bar but reclaim the bottom 26 px for content.
     unsigned long phaseMs = millis();
     if (!_bootMode) {
         lv_obj_clear_flag(_lvStatusBar.obj(), LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(_lvTabBar.obj(), LV_OBJ_FLAG_HIDDEN);
+        applyTabBarVisibility();
     }
     lv_obj_clear_flag(_lvContent, LV_OBJ_FLAG_HIDDEN);
     showMs = millis() - phaseMs;
@@ -105,9 +108,37 @@ void UIManager::setBootMode(bool boot) {
         lv_obj_set_size(_lvContent, Theme::SCREEN_W, Theme::SCREEN_H);
     } else {
         lv_obj_clear_flag(_lvStatusBar.obj(), LV_OBJ_FLAG_HIDDEN);
+        // Tab bar follows the visibility flag, not boot-mode restore, so
+        // leaving boot mode while a Peers-as-app session is active keeps
+        // the tab bar hidden.
+        applyTabBarVisibility();
+        lv_obj_set_pos(_lvContent, 0, Theme::STATUS_BAR_H);
+    }
+}
+
+void UIManager::setTabBarVisible(bool visible) {
+    if (_tabBarVisible == visible) return;
+    _tabBarVisible = visible;
+    if (_bootMode) {
+        // Boot mode owns its own visibility; nothing to do until we exit.
+        return;
+    }
+    applyTabBarVisibility();
+}
+
+void UIManager::applyTabBarVisibility() {
+    if (!_lvContent) return;
+    if (_tabBarVisible) {
         lv_obj_clear_flag(_lvTabBar.obj(), LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(_lvContent, 0, Theme::STATUS_BAR_H);
         lv_obj_set_size(_lvContent, Theme::CONTENT_W, Theme::CONTENT_H);
+    } else {
+        lv_obj_add_flag(_lvTabBar.obj(), LV_OBJ_FLAG_HIDDEN);
+        // Keep status bar visible; reclaim the bottom 26 px for the
+        // current screen. CONTENT_Y unchanged.
+        lv_obj_set_pos(_lvContent, 0, Theme::STATUS_BAR_H);
+        lv_obj_set_size(_lvContent, Theme::CONTENT_W,
+                        Theme::SCREEN_H - Theme::STATUS_BAR_H);
     }
 }
 
