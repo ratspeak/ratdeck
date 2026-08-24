@@ -56,10 +56,10 @@ static size_t encodePlusCode(char* buf, size_t n, double lat, double lon) {
   char code[16];
   memset(code, 0, sizeof(code));
 
-  double pairRes = 20.0;  // initial pair resolution (degrees)
+  // Pair resolutions: 20°, 1°, 0.05°, 0.0025°, 0.000125° — divide AFTER each pair.
+  double pairRes = 20.0;
   int idx = 0;
   for (int i = 0; i < kOlcPairCodeLen / 2; i++) {
-    pairRes /= 20.0;
     int latDigit = (int)(latVal / pairRes);
     int lonDigit = (int)(lonVal / pairRes);
     if (latDigit > 19) latDigit = 19;
@@ -68,6 +68,7 @@ static size_t encodePlusCode(char* buf, size_t n, double lat, double lon) {
     code[idx++] = kOlcAlphabet[lonDigit];
     latVal -= latDigit * pairRes;
     lonVal -= lonDigit * pairRes;
+    pairRes /= 20.0;
   }
 
   // Final grid refinement for code length 11 (one extra char).
@@ -195,8 +196,9 @@ size_t formatDM(char* buf, size_t n, double lat, double lon) {
   int lonD = (int)alon;
   double lonM = (alon - lonD) * 60.0;
 
-  int w = snprintf(buf, n, "%d\xC2\xB0 %07.4f' %c, %d\xC2\xB0 %07.4f' %c",
-                   latD, latM, ns, lonD, lonM, ew);
+  // ASCII "d" for degrees — device fonts lack UTF-8 ° (U+00B0).
+  int w = snprintf(buf, n, "%dd %06.3f'%c  %dd %06.3f'%c", latD, latM, ns,
+                   lonD, lonM, ew);
   if (w < 0 || (size_t)w >= n) return 0;
   return (size_t)w;
 }
@@ -228,9 +230,8 @@ size_t formatDMS(char* buf, size_t n, double lat, double lon) {
   split(alat, latD, latM, latS);
   split(alon, lonD, lonM, lonS);
 
-  int w = snprintf(buf, n,
-                   "%d\xC2\xB0 %02d' %04.1f\" %c, %d\xC2\xB0 %02d' %04.1f\" %c",
-                   latD, latM, latS, ns, lonD, lonM, lonS, ew);
+  int w = snprintf(buf, n, "%dd %02d'%04.1f\"%c  %dd %02d'%04.1f\"%c", latD,
+                   latM, latS, ns, lonD, lonM, lonS, ew);
   if (w < 0 || (size_t)w >= n) return 0;
   return (size_t)w;
 }

@@ -14,10 +14,10 @@ namespace CoordFormat {
 // "34.052235 N, 84.123456 W"
 size_t formatDD(char* buf, size_t n, double lat, double lon);
 
-// "34° 03.1341' N, 84° 07.4074' W"
+// "34d 03.134'N  84d 07.407'W"  (ASCII "d" — no UTF-8 degree glyph)
 size_t formatDM(char* buf, size_t n, double lat, double lon);
 
-// "34° 03' 08.0\" N, 84° 07' 24.4\" W"
+// "34d 03'08.0\"N  84d 07'24.4\"W"
 size_t formatDMS(char* buf, size_t n, double lat, double lon);
 
 // Open Location Code (Plus Code), length 11 e.g. "86FV3R2X+2V7"

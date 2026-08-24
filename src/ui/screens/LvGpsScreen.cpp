@@ -191,13 +191,14 @@ void LvGpsScreen::rebuild() {
     CoordFormat::formatPlusCode(plus, sizeof(plus), lat, lon);
     CoordFormat::formatUTM(utm, sizeof(utm), lat, lon);
 
+    // One line per format — tag and value on the same row (plenty of width).
     snprintf(buf, sizeof(buf),
-             "%s\n\n"
-             "DD\n%s\n\n"
-             "DM\n%s\n\n"
-             "DMS\n%s\n\n"
-             "PLUS  %s\n"
-             "UTM   %s",
+             "%s\n"
+             "DD   %s\n"
+             "DM   %s\n"
+             "DMS  %s\n"
+             "PLUS %s\n"
+             "UTM  %s",
              status, dd, dm, dms, plus, utm);
 
     lv_label_set_text(_body, buf);
