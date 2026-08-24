@@ -45,6 +45,7 @@
 #include "ui/screens/LvNotesEditScreen.h"
 #include "ui/screens/LvFilesScreen.h"
 #include "ui/screens/LvReaderScreen.h"
+#include "ui/screens/LvGpsScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "storage/MessageStore.h"
@@ -144,6 +145,9 @@ LvNotesListScreen lvNotesListScreen;
 LvNotesEditScreen lvNotesEditScreen;
 LvFilesScreen lvFilesScreen;
 LvReaderScreen lvReaderScreen;
+#if HAS_GPS
+LvGpsScreen lvGpsScreen;
+#endif
 LvNameInputScreen lvNameInputScreen;
 LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
@@ -2221,6 +2225,26 @@ void setup() {
     lvReaderScreen.setBackCallback([]() {
         ui.setScreen(&lvFilesScreen);
     });
+
+#if HAS_GPS
+    // GPS status app — fix/sats/alt only (no lat/lon). BACK → Apps;
+    // OPEN MAP → map app-mode (same as Map tile).
+    lvAppsScreen.setOpenGpsCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvGpsScreen);
+    });
+    lvGpsScreen.setGps(&gps);
+    lvGpsScreen.setUIManager(&ui);
+    lvGpsScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+    lvGpsScreen.setOpenMapCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvMapScreen);
+    });
+#endif
 
     // Notes list — full-screen app-mode. Tapping NEW (or a row) routes
     // to the editor; BACK routes back to Apps (showing the tab bar).

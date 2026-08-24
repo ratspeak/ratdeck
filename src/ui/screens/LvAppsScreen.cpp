@@ -39,7 +39,7 @@ constexpr TileSpec kSpecs[LvAppsScreen::TILE_COUNT] = {
     {"Map",     false},
     {"Notes",   false},   // live — see LvNotesListScreen / LvNotesEditScreen
     {"Files",   false},   // live — see LvFilesScreen / LvReaderScreen
-    {"GPS",     true},
+    {"GPS",     false},   // live — see LvGpsScreen
     {"Encrypt", true},
 };
 
