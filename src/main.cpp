@@ -66,6 +66,7 @@
 #include "audio/AudioNotify.h"
 #include "util/PerfTrace.h"
 #include "util/LocationParse.h"
+#include "util/FileCrypto.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <atomic>
@@ -2172,15 +2173,19 @@ void setup() {
     lvNotesListScreen.setUIManager(&ui);
     lvNotesListScreen.setOpenEditCallback([](const String& filename) {
         // Filename is generated here so the editor stays clock-agnostic.
-        // Empty → caller asks for a fresh timestamp name.
+        // Empty → caller asks for a fresh timestamp name. The
+        // generated name defaults to .txt; the editor may swap the
+        // extension to .note.enc at save time when the user picked
+        // "Locked" mode.
         String name = filename;
         if (name.length() == 0) {
             time_t now = time(nullptr);
-            char ts[24];
+            char ts[40];
             if (now > 1700000000) {
                 struct tm* local = localtime(&now);
                 if (local) {
-                    // Short name so the edit header never clips (note_MMDDYY_HHMMSS.txt).
+                    // Short name so the edit header never clips
+                    // (note_MMDDYY_HHMMSS.txt / .note.enc).
                     snprintf(ts, sizeof(ts), "note_%02d%02d%02d_%02d%02d%02d.txt",
                              local->tm_mon + 1, local->tm_mday, (local->tm_year + 1900) % 100,
                              local->tm_hour, local->tm_min, local->tm_sec);
@@ -2205,18 +2210,18 @@ void setup() {
     });
 
     // Notes edit — full-screen app-mode. SAVE writes through SDStore
-    // and stays on screen with a "Saved" toast. BACK discards unsaved
-    // edits (MVP) and returns to the list (tabs stay hidden — list
-    // takes care of its own tab-bar visibility).
+    // (plain .txt) or FileCrypto (locked .note.enc). BACK discards
+    // unsaved edits (MVP) and returns to the list (tabs stay hidden —
+    // list takes care of its own tab-bar visibility).
     lvNotesEditScreen.setSDStore(&sdStore);
     lvNotesEditScreen.setUIManager(&ui);
-    lvNotesEditScreen.setSaveCallback([]() {
+    lvNotesEditScreen.setSaveCallback([](const String& body, bool locked,
+                                        const char* pass, size_t passLen) {
         if (!sdStore.isReady()) {
             ui.lvStatusBar().showToast("No SD card", 1500);
             return;
         }
         String name = lvNotesEditScreen.filename();
-        String body = lvNotesEditScreen.body();
         // Empty-body guard — SDStore::writeString would happily create a
         // 0-byte file, but the spec's intent is "notes have content".
         // Allow blank notes for now; we don't enforce non-empty.
@@ -2226,7 +2231,6 @@ void setup() {
             ui.lvStatusBar().showToast("Filename missing", 1500);
             return;
         }
-        String path = String("/Files/notes/") + name;
         if (!sdStore.ensureDir("/Files")) {
             ui.lvStatusBar().showToast("Save failed (mkdir)", 1500);
             return;
@@ -2235,6 +2239,86 @@ void setup() {
             ui.lvStatusBar().showToast("Save failed (mkdir)", 1500);
             return;
         }
+
+        // ---- LOCKED save ----
+        // The editor already confirmed the passphrase twice (enter +
+        // confirm match). Here we encrypt in RAM and write the
+        // ciphertext blob directly to SD — no intermediate cleartext
+        // file is ever staged. Passphrase / plaintext are NEVER
+        // logged; only the resulting file path and length.
+        if (locked) {
+            if (!pass || passLen == 0) {
+                ui.lvStatusBar().showToast("Passphrase missing", 1500);
+                return;
+            }
+            // If the original filename was plain (.txt) and the user
+            // picked LOCKED before saving a NEW note, swap the
+            // extension so the resulting file matches the editor's
+            // visual mode. For an EXISTING file we keep the name the
+            // editor has — re-saving an existing encrypted file uses
+            // the same .note.enc name; re-saving a plain .txt as
+            // locked renames the live file to .note.enc but we do not
+            // actively delete the .txt (MVP — left to manual cleanup).
+            String encName = name;
+            // Heuristic: if the existing filename has no .note.enc
+            // extension, replace its extension with .note.enc.
+            int dot = encName.lastIndexOf('.');
+            if (dot > 0) {
+                String tail = encName.substring(dot);
+                tail.toLowerCase();
+                if (tail != String(".note.enc")) {
+                    encName = encName.substring(0, dot) + String(".note.enc");
+                }
+            } else {
+                encName = encName + String(".note.enc");
+            }
+
+            // Allocate the blob buffer on the stack. Max plaintext
+            // is 4 KB, blob overhead is 54 B (38 header + 16 tag).
+            uint8_t blob[FileCrypto::HEADER_SIZE +
+                         LvNotesEditScreen::MAX_BODY_LEN +
+                         FileCrypto::TAG_SIZE];
+            size_t blobLen = 0;
+            bool ok = FileCrypto::encrypt(pass, passLen,
+                                          (const uint8_t*)body.c_str(),
+                                          body.length(),
+                                          blob, sizeof(blob), &blobLen);
+            // Wipe the local copy of the passphrase the caller
+            // handed us. The editor's own pass buffer was already
+            // wiped by its post-save path; we wipe here defensively.
+            FileCrypto::wipeSensitive(const_cast<char*>(pass), passLen);
+            if (!ok) {
+                FileCrypto::wipeSensitive(blob, sizeof(blob));
+                Serial.printf("[NOTES] save: encrypt failed for %s\n",
+                              encName.c_str());
+                ui.lvStatusBar().showToast("Save failed (encrypt)", 1500);
+                return;
+            }
+
+            String encPath = String("/Files/notes/") + encName;
+            bool wrote = sdStore.writeAtomic(encPath.c_str(), blob, blobLen);
+            // Always wipe the (now-encrypted-or-not) blob before
+            // returning — it contains either the ciphertext (still
+            // sensitive) or partial garbage from a failed encrypt.
+            FileCrypto::wipeSensitive(blob, sizeof(blob));
+            if (!wrote || !sdStore.exists(encPath.c_str())) {
+                Serial.printf("[NOTES] save: writeAtomic failed for %s\n",
+                              encName.c_str());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+            // Update the editor's filename so subsequent saves (and
+            // the BACK-then-reopen flow) use the .note.enc name. We
+            // don't change _locked; it stays true.
+            lvNotesEditScreen.setFilename(encName);
+            Serial.printf("[NOTES] save: ok locked path=%s len=%u\n",
+                          encPath.c_str(), (unsigned)blobLen);
+            ui.lvStatusBar().showToast("Saved (locked)", 1200);
+            return;
+        }
+
+        // ---- PLAIN save ----
+        String path = String("/Files/notes/") + name;
         // writeString already chains writeAtomic → writeSimple fallback,
         // but the list empty-state bug taught us to verify on disk
         // after a "successful" return: if the rename path dropped the
@@ -2244,10 +2328,6 @@ void setup() {
         // only the path, byte count, and ok/fail status.
         bool wrote = sdStore.writeString(path.c_str(), body);
         if (!wrote || !sdStore.exists(path.c_str())) {
-            // Last-ditch direct write in case the atomic-rename path
-            // is the broken one. writeString already tries this on
-            // writeAtomic failure; the exists() check covers the case
-            // where writeString claims success but nothing landed.
             if (!wrote) {
                 Serial.printf("[NOTES] save: writeString failed for %s (len=%u)\n",
                               name.c_str(), (unsigned)body.length());
@@ -2273,7 +2353,6 @@ void setup() {
         }
         Serial.printf("[NOTES] save: ok path=%s len=%u\n",
                       path.c_str(), (unsigned)body.length());
-        // Stay on screen — user can keep editing or hit BACK.
         ui.lvStatusBar().showToast("Saved", 1200);
     });
     lvNotesEditScreen.setBackCallback([]() {

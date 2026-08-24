@@ -61,6 +61,30 @@ static bool endsWithTxt(const char* name) {
            asciiLower(ext[3]) == 't';
 }
 
+// True if `name` ends with ".note.enc" (case-insensitive). The
+// extension matches the FileCrypto RNE1 blob layout produced by the
+// editor when the user picks "Locked" before saving — see
+// src/util/FileCrypto.h for the binary format.
+static bool endsWithNoteEnc(const char* name) {
+    if (!name) return false;
+    static const char kExt[] = ".note.enc";
+    constexpr size_t el = sizeof(kExt) - 1;   // 9
+    size_t n = strlen(name);
+    if (n < el) return false;
+    const char* p = name + n - el;
+    for (size_t i = 0; i < el; ++i) {
+        if (asciiLower(p[i]) != kExt[i]) return false;
+    }
+    return true;
+}
+
+// True for any extension the Notes app considers a real note file
+// (plain .txt or encrypted .note.enc). Used to filter the directory
+// walk in rebuildList().
+static bool isNoteFile(const char* name) {
+    return endsWithTxt(name) || endsWithNoteEnc(name);
+}
+
 // True if `name` ends with .tmp or .bak (case-insensitive). These are
 // the suffixes SDStore::writeAtomic uses for the in-flight and previous
 // versions of a note; we skip them so a partial save never shows up as
@@ -291,7 +315,7 @@ void LvNotesListScreen::rebuildList() {
                     // Partial-save residue from writeAtomic's .tmp / .bak
                     // staging. Not a real note; never show it.
                     skippedTmp++;
-                } else if (endsWithTxt(base)) {
+                } else if (isNoteFile(base)) {
                     size_t nameLen = strnlen(base, sizeof(entries[n].name) - 1);
                     memcpy(entries[n].name, base, nameLen);
                     entries[n].name[nameLen] = '\0';
@@ -337,6 +361,8 @@ void LvNotesListScreen::rebuildList() {
     for (int i = 0; i < n; ++i) {
         _rowNames.push_back(String(entries[i].name));
 
+        const bool isLocked = endsWithNoteEnc(entries[i].name);
+
         lv_obj_t* row = lv_obj_create(_list);
         lv_obj_set_size(row, Theme::CONTENT_W, kRowH);
         lv_obj_set_style_bg_color(row, lv_color_hex(Theme::BG_ELEVATED), 0);
@@ -350,12 +376,28 @@ void LvNotesListScreen::rebuildList() {
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_user_data(row, (void*)(intptr_t)i);
 
+        // Lock badge — single glyph "L" prefixed to the filename for
+        // encrypted notes. Cheap visual cue without requiring an
+        // icon font. Reserve ~14 px of width so the filename's first
+        // letter never overlaps the badge.
+        if (isLocked) {
+            lv_obj_t* lockLbl = lv_label_create(row);
+            lv_obj_set_style_text_font(lockLbl, &lv_font_rsdeck_10, 0);
+            lv_obj_set_style_text_color(lockLbl, lv_color_hex(Theme::WARNING_CLR), 0);
+            lv_label_set_text(lockLbl, "L");
+            lv_obj_set_pos(lockLbl, kRowPadX, (kRowH - 10) / 2);
+        }
+
+        const lv_coord_t nameX = isLocked ? (kRowPadX + 12) : kRowPadX;
+        const lv_coord_t nameW = Theme::CONTENT_W - 80 - (isLocked ? 12 : 0);
+
         lv_obj_t* lbl = lv_label_create(row);
         lv_obj_set_style_text_font(lbl, &lv_font_rsdeck_12, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(Theme::TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_color(lbl,
+            lv_color_hex(isLocked ? Theme::TEXT_SECONDARY : Theme::TEXT_PRIMARY), 0);
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(lbl, Theme::CONTENT_W - 80);
-        lv_obj_set_pos(lbl, kRowPadX, (kRowH - 14) / 2);
+        lv_obj_set_width(lbl, nameW);
+        lv_obj_set_pos(lbl, nameX, (kRowH - 14) / 2);
         lv_label_set_text(lbl, entries[i].name);
 
         lv_obj_t* sizeLbl = lv_label_create(row);
