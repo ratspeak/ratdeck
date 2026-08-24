@@ -37,7 +37,7 @@ struct TileSpec {
 
 constexpr TileSpec kSpecs[LvAppsScreen::TILE_COUNT] = {
     {"Map",     false},
-    {"Notes",   true},
+    {"Notes",   false},   // live — see LvNotesListScreen / LvNotesEditScreen
     {"Files",   true},
     {"GPS",     true},
     {"Encrypt", true},

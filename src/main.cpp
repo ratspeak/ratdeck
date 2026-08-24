@@ -41,6 +41,8 @@
 #include "ui/screens/LvTimezoneScreen.h"
 #include "ui/screens/LvDataCleanScreen.h"
 #include "ui/screens/LvAppsScreen.h"
+#include "ui/screens/LvNotesListScreen.h"
+#include "ui/screens/LvNotesEditScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "storage/MessageStore.h"
@@ -135,6 +137,8 @@ LvHelpOverlay lvHelpOverlay;
 LvQrOverlay lvQrOverlay;
 LvMapScreen lvMapScreen;
 LvAppsScreen lvAppsScreen;
+LvNotesListScreen lvNotesListScreen;
+LvNotesEditScreen lvNotesEditScreen;
 LvNameInputScreen lvNameInputScreen;
 LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
@@ -1479,6 +1483,10 @@ void setup() {
     Serial.printf("[BOOT] Reset: %s (%d)\n", reasonStr, (int)reason);
     Serial.printf("[BOOT] Heap: %lu  PSRAM: %lu\n",
                   (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getPsramSize());
+    // Observable firmware identity — if this line is missing after flash, the
+    // write did not stick (common under --no-stub MD5-skip). Do not debug Notes
+    // until serial shows notes-v3 on every boot.
+    Serial.printf("[BUILD] rsDeck %s %s notes-v3\n", __DATE__, __TIME__);
     bootTraceBegin(setupStartMs);
     bootTraceStage("serial-online");
 
@@ -2150,6 +2158,128 @@ void setup() {
     // (it owns UIManager), so we don't need to wire callbacks here.
     // If/when a tile becomes live, swap in a real callback above.
 
+    // Notes tile is live — open the list screen (app-mode, tab bar
+    // hidden). The list owns the open-edit and back callbacks so it
+    // can route to the editor or back to Apps.
+    lvAppsScreen.setOpenNotesCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvNotesListScreen);
+    });
+
+    // Notes list — full-screen app-mode. Tapping NEW (or a row) routes
+    // to the editor; BACK routes back to Apps (showing the tab bar).
+    lvNotesListScreen.setSDStore(&sdStore);
+    lvNotesListScreen.setUIManager(&ui);
+    lvNotesListScreen.setOpenEditCallback([](const String& filename) {
+        // Filename is generated here so the editor stays clock-agnostic.
+        // Empty → caller asks for a fresh timestamp name.
+        String name = filename;
+        if (name.length() == 0) {
+            time_t now = time(nullptr);
+            char ts[24];
+            if (now > 1700000000) {
+                struct tm* local = localtime(&now);
+                if (local) {
+                    // Short name so the edit header never clips (note_MMDDYY_HHMMSS.txt).
+                    snprintf(ts, sizeof(ts), "note_%02d%02d%02d_%02d%02d%02d.txt",
+                             local->tm_mon + 1, local->tm_mday, (local->tm_year + 1900) % 100,
+                             local->tm_hour, local->tm_min, local->tm_sec);
+                    name = String(ts);
+                }
+            }
+            if (name.length() == 0) {
+                // RTC unset (e.g. before GPS sync) — fall back to a
+                // millis-based name so the user can still create notes.
+                unsigned long ms = millis();
+                snprintf(ts, sizeof(ts), "note_m%lu.txt", ms);
+                name = String(ts);
+            }
+        }
+        lvNotesEditScreen.setFilename(name);
+        ui.setScreen(&lvNotesEditScreen);
+    });
+    lvNotesListScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+
+    // Notes edit — full-screen app-mode. SAVE writes through SDStore
+    // and stays on screen with a "Saved" toast. BACK discards unsaved
+    // edits (MVP) and returns to the list (tabs stay hidden — list
+    // takes care of its own tab-bar visibility).
+    lvNotesEditScreen.setSDStore(&sdStore);
+    lvNotesEditScreen.setUIManager(&ui);
+    lvNotesEditScreen.setSaveCallback([]() {
+        if (!sdStore.isReady()) {
+            ui.lvStatusBar().showToast("No SD card", 1500);
+            return;
+        }
+        String name = lvNotesEditScreen.filename();
+        String body = lvNotesEditScreen.body();
+        // Empty-body guard — SDStore::writeString would happily create a
+        // 0-byte file, but the spec's intent is "notes have content".
+        // Allow blank notes for now; we don't enforce non-empty.
+        if (name.length() == 0) {
+            // Should never happen — the open-edit callback assigns a
+            // name. Bail defensively.
+            ui.lvStatusBar().showToast("Filename missing", 1500);
+            return;
+        }
+        String path = String("/Files/notes/") + name;
+        if (!sdStore.ensureDir("/Files")) {
+            ui.lvStatusBar().showToast("Save failed (mkdir)", 1500);
+            return;
+        }
+        if (!sdStore.ensureDir("/Files/notes")) {
+            ui.lvStatusBar().showToast("Save failed (mkdir)", 1500);
+            return;
+        }
+        // writeString already chains writeAtomic → writeSimple fallback,
+        // but the list empty-state bug taught us to verify on disk
+        // after a "successful" return: if the rename path dropped the
+        // LFN or the FS layer swallowed a transient error, the list
+        // would otherwise show "No notes yet" and the user would think
+        // their save was lost. The body is intentionally NOT logged —
+        // only the path, byte count, and ok/fail status.
+        bool wrote = sdStore.writeString(path.c_str(), body);
+        if (!wrote || !sdStore.exists(path.c_str())) {
+            // Last-ditch direct write in case the atomic-rename path
+            // is the broken one. writeString already tries this on
+            // writeAtomic failure; the exists() check covers the case
+            // where writeString claims success but nothing landed.
+            if (!wrote) {
+                Serial.printf("[NOTES] save: writeString failed for %s (len=%u)\n",
+                              name.c_str(), (unsigned)body.length());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+            Serial.printf("[NOTES] save: writeString ok but file missing at %s — retrying direct\n",
+                          path.c_str());
+            if (!sdStore.writeSimple(path.c_str(),
+                                     (const uint8_t*)body.c_str(),
+                                     body.length())) {
+                Serial.printf("[NOTES] save: writeSimple retry also failed for %s\n",
+                              name.c_str());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+            if (!sdStore.exists(path.c_str())) {
+                Serial.printf("[NOTES] save: writeSimple ok but file still missing at %s\n",
+                              path.c_str());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+        }
+        Serial.printf("[NOTES] save: ok path=%s len=%u\n",
+                      path.c_str(), (unsigned)body.length());
+        // Stay on screen — user can keep editing or hit BACK.
+        ui.lvStatusBar().showToast("Saved", 1200);
+    });
+    lvNotesEditScreen.setBackCallback([]() {
+        ui.setScreen(&lvNotesListScreen);
+    });
+
     // "Send GPS" action from the nodes screen action menu. Build the
     // `LOC lat lon` body from the current fix and dispatch via LXMF.
     // We only run when the user has GPS location tracking on AND has a
@@ -2432,6 +2562,7 @@ void setup() {
     bootTraceStage("keyboard-auto");
 
     Serial.println("[BOOT] rsDeck ready");
+    Serial.printf("[BUILD] rsDeck %s %s notes-v3\n", __DATE__, __TIME__);
     Serial.printf("[BOOT] Summary: radio=%s flash=%s sd=%s\n",
                   radioOnline ? "ONLINE" : "OFFLINE",
                   flash.isReady() ? "OK" : "FAIL",
