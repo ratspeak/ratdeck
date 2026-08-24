@@ -77,7 +77,9 @@
 #define TCP_CONNECT_TIMEOUT_MS      500
 
 // --- Announce Flood Defense ---
-#define RSDECK_MAX_ANNOUNCES_PER_SEC 5     // Transport-level rate limit (before Ed25519 verify)
+// Transport-level announce drop (before Ed25519 verify). Keep low under
+// I2P/TCP floods so main loop still services touch/LVGL.
+#define RSDECK_MAX_ANNOUNCES_PER_SEC 4
 
 // --- Limits ---
 #define RSDECK_MAX_NODES             100   // Endpoint device, not transport node

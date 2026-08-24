@@ -105,35 +105,11 @@ void AnnounceManager::received_announce(
     const RNS::Identity& announced_identity,
     const RNS::Bytes& app_data)
 {
-    std::string name;
-    if (app_data.size() > 0) {
-        Serial.printf("[ANNOUNCE-RX] app_data: %d bytes hex: ", (int)app_data.size());
-        for (size_t i = 0; i < std::min((size_t)16, app_data.size()); i++)
-            Serial.printf("%02X", app_data.data()[i]);
-        Serial.println();
-        std::string rawName = extractMsgPackName(app_data.data(), app_data.size());
-        if (rawName.empty()) {
-            bool isText = app_data.size() > 0 && app_data.size() <= 32;
-            for (size_t i = 0; isText && i < app_data.size(); i++) {
-                uint8_t c = app_data.data()[i];
-                if (c < 0x20 || c > 0x7E) isText = false;
-            }
-            if (isText) {
-                rawName = app_data.toString();
-            } else {
-                Serial.printf("[ANNOUNCE] Unknown app_data format (%d bytes): ", (int)app_data.size());
-                for (size_t i = 0; i < std::min((size_t)32, app_data.size()); i++) {
-                    Serial.printf("%02X ", app_data.data()[i]);
-                }
-                Serial.println();
-            }
-        }
-        name = sanitizeName(rawName);
-    }
-    // Filter out own announces
+    // Cheap filters FIRST — I2P/TCP floods can deliver dozens of announces
+    // per second. Serial I/O + flash writes here starve the main loop and
+    // make GT911 touch (polled once per loop) feel dead.
     if (_localDestHash.size() > 0 && destination_hash == _localDestHash) return;
 
-    // Layer 3: Global announce rate limit — cap application-layer processing
     {
         unsigned long now = millis();
         if (now - _globalAnnounceWindowStart >= 1000) {
@@ -141,6 +117,20 @@ void AnnounceManager::received_announce(
             _globalAnnounceCount = 0;
         }
         if (++_globalAnnounceCount > MAX_GLOBAL_ANNOUNCES_PER_SEC) return;
+    }
+
+    std::string name;
+    if (app_data.size() > 0) {
+        std::string rawName = extractMsgPackName(app_data.data(), app_data.size());
+        if (rawName.empty()) {
+            bool isText = app_data.size() > 0 && app_data.size() <= 32;
+            for (size_t i = 0; isText && i < app_data.size(); i++) {
+                uint8_t c = app_data.data()[i];
+                if (c < 0x20 || c > 0x7E) isText = false;
+            }
+            if (isText) rawName = app_data.toString();
+        }
+        name = sanitizeName(rawName);
     }
 
     std::string key = makeKey(destination_hash);
@@ -162,35 +152,31 @@ void AnnounceManager::received_announce(
         // hops_to() is expensive (linear routing table scan) — only call for saved contacts
         if (node.saved) node.hops = RNS::Transport::hops_to(destination_hash);
         if (_loraIf) { node.rssi = _loraIf->lastRxRssi(); node.snr = _loraIf->lastRxSnr(); }
-        // Name cache update — skip expensive toHex() for unnamed re-announces
+        // Name cache: mark dirty only — loop() persists (never flash mid-flood).
         if (!name.empty()) {
             std::string destHex = destination_hash.toHex();
             auto nc = _nameCache.find(destHex);
             if (nc == _nameCache.end() || nc->second != name) {
                 _nameCache[destHex] = name;
                 _nameCacheDirty = true;
-                saveNameCache();
-                _nameCacheDirty = false;
             }
         }
-        if (!idHex.empty()) {
-            persistKnownDestinationsAfterAnnounce(
-                identityChanged ? "identity update" : "repeat announce",
-                identityChanged);
+        // Only force-persist on identity change; repeat announces are deferred.
+        if (!idHex.empty() && identityChanged) {
+            persistKnownDestinationsAfterAnnounce("identity update", true);
         }
         return;
     }
 
-    // New node — toHex needed for log + name cache
+    // New node — toHex needed for name cache key
     std::string destHex = destination_hash.toHex();
-    Serial.printf("[ANNOUNCE] New: %s name=\"%s\"\n", destHex.c_str(), name.c_str());
 
     if (!name.empty()) {
         auto nc = _nameCache.find(destHex);
         if (nc == _nameCache.end() || nc->second != name) {
             _nameCache[destHex] = name;
             _nameCacheDirty = true;
-            // Cap name cache size: prune entries not in _nodes or saved contacts
+            // Cap name cache size: prune entries not in _nodes
             if ((int)_nameCache.size() > MAX_NAME_CACHE) {
                 for (auto it = _nameCache.begin(); it != _nameCache.end() && (int)_nameCache.size() > MAX_NAME_CACHE; ) {
                     RNS::Bytes h; h.assignHex(it->first.c_str());
@@ -201,8 +187,7 @@ void AnnounceManager::received_announce(
                     }
                 }
             }
-            saveNameCache();
-            _nameCacheDirty = false;
+            // Defer saveNameCache to loop() — flash write here freezes UI.
         }
     }
 

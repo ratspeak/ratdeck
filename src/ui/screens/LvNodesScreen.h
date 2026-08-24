@@ -51,9 +51,8 @@ private:
     void updateNicknameDisplay();
     void updateOverlayDetails(const char* title);
     // Number of menu entries visible in the current action-menu state.
-    // 3 for unsaved peers (Save/Message/Close), 4 for saved contacts
-    // (Message/Send GPS/Edit Name/Close). Drives the keyboard nav cap
-    // and the "show/hide the 4th button" layout.
+    // 3 for unsaved peers (Save/Message/Close), 5 for saved contacts
+    // (Message/Send GPS/Edit Name/Remove/Close).
     int menuEntryCount() const;
 
     AnnounceManager* _am = nullptr;
@@ -71,10 +70,9 @@ private:
     int _actionNodeIdx = -1;
     String _nicknameText;
 
-    // Overlay widgets — menu supports up to 4 entries (saved-contact
-    // path adds Send GPS on top of the original 3). Unsaved peers use
-    // only 3 of the 4 slots; the 4th is hidden via LV_OBJ_FLAG_HIDDEN.
-    static constexpr int MAX_MENU_ENTRIES = 4;
+    // Overlay widgets — up to 5 entries for saved contacts (incl. Remove).
+    // Unsaved peers use 3 slots; extras hidden via LV_OBJ_FLAG_HIDDEN.
+    static constexpr int MAX_MENU_ENTRIES = 5;
     lv_obj_t* _overlay = nullptr;
     lv_obj_t* _overlayTitle = nullptr;
     lv_obj_t* _overlayMeta = nullptr;

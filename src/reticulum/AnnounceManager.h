@@ -92,12 +92,14 @@ private:
     std::map<std::string, std::string> _nameCache;  // hexHash → displayName
     unsigned long _globalAnnounceWindowStart = 0;
     unsigned int _globalAnnounceCount = 0;
-    static constexpr unsigned int MAX_GLOBAL_ANNOUNCES_PER_SEC = 10;
+    // Keep app-layer processing light under I2P/TCP announce floods so the
+    // main loop can still poll GT911 touch + LVGL every frame.
+    static constexpr unsigned int MAX_GLOBAL_ANNOUNCES_PER_SEC = 5;
     static constexpr int MAX_NODES = 100;
     static constexpr int MAX_NAME_CACHE = 300;
     static constexpr unsigned long CONTACT_SAVE_INTERVAL_MS = 30000;
-    static constexpr unsigned long KNOWN_DESTINATION_PERSIST_MIN_INTERVAL_MS = 5000;
-    static constexpr unsigned long ANNOUNCE_MIN_INTERVAL_MS = 200;  // Rate-limit announce processing
+    static constexpr unsigned long KNOWN_DESTINATION_PERSIST_MIN_INTERVAL_MS = 15000;
+    static constexpr unsigned long ANNOUNCE_MIN_INTERVAL_MS = 500;  // per-peer re-announce floor
     unsigned long _lastKnownDestinationsPersist = 0;
 
     std::unordered_map<std::string, int> _hashIndex;  // raw hash bytes → _nodes index

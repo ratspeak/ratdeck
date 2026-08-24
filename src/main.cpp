@@ -2119,6 +2119,30 @@ void setup() {
         ui.lvTabBar().setActiveTab(LvTabBar::TAB_MSGS);
         ui.setScreen(&lvMessageView);
     });
+    // Send GPS from Contacts action modal (same path as Peers used to use).
+#if HAS_GPS
+    lvContactsScreen.setSendGpsCallback([](const std::string& peerHex) {
+        if (!userConfig.settings().gpsLocationEnabled) {
+            ui.lvStatusBar().showToast("GPS location off", 1500);
+            return;
+        }
+        if (!gps.hasLocationFix()) {
+            ui.lvStatusBar().showToast("No GPS fix", 1500);
+            return;
+        }
+        char body[64];
+        snprintf(body, sizeof(body), "LOC %.5f %.5f",
+                 gps.latitude(), gps.longitude());
+        RNS::Bytes destHash;
+        destHash.assignHex(peerHex.c_str());
+        if (announceManager) announceManager->ensureSavedContact(peerHex);
+        if (!lxmf.sendMessage(destHash, body)) {
+            ui.lvStatusBar().showToast("GPS send failed", 1500);
+            return;
+        }
+        ui.lvStatusBar().showToast("GPS sent", 1200);
+    });
+#endif
 
     lvNodesScreen.setAnnounceManager(announceManager);
     lvNodesScreen.setUIManager(&ui);
@@ -2743,9 +2767,14 @@ void loop() {
         }
     }
 
-    // 4.5 Keep LVGL responsive after heavy RNS processing (announce floods)
+    // 4.5 Keep UI/touch responsive after heavy RNS (I2P announce floods).
+    // Touch is GT911 on I2C — not SPI contention with LoRa/display — but
+    // inputManager only polls once per loop. Re-poll + LVGL when RNS ran long.
     if (rnsDuration > LVGL_INTERVAL_MS && powerMgr.isScreenOn()) {
+        inputManager.update();
+        if (inputManager.hadStrongActivity()) powerMgr.activity();
         lv_timer_handler();
+        lastLvglTime = millis();
     }
 
     if (bootComplete && bootAnnouncePending && (long)(millis() - bootAnnounceAt) >= 0) {
