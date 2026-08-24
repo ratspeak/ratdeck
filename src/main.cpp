@@ -43,6 +43,8 @@
 #include "ui/screens/LvAppsScreen.h"
 #include "ui/screens/LvNotesListScreen.h"
 #include "ui/screens/LvNotesEditScreen.h"
+#include "ui/screens/LvFilesScreen.h"
+#include "ui/screens/LvReaderScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "storage/MessageStore.h"
@@ -140,6 +142,8 @@ LvMapScreen lvMapScreen;
 LvAppsScreen lvAppsScreen;
 LvNotesListScreen lvNotesListScreen;
 LvNotesEditScreen lvNotesEditScreen;
+LvFilesScreen lvFilesScreen;
+LvReaderScreen lvReaderScreen;
 LvNameInputScreen lvNameInputScreen;
 LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
@@ -2189,6 +2193,33 @@ void setup() {
     lvAppsScreen.setOpenNotesCallback([]() {
         ui.setTabBarVisible(false);
         ui.setScreen(&lvNotesListScreen);
+    });
+
+    // Files tile — browser chrooted to /Files (tab bar hidden).
+    lvAppsScreen.setOpenFilesCallback([]() {
+        lvFilesScreen.resetToRoot();
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvFilesScreen);
+    });
+
+    // Files browser — open .txt/.md in Reader; BACK → Apps.
+    lvFilesScreen.setSDStore(&sdStore);
+    lvFilesScreen.setUIManager(&ui);
+    lvFilesScreen.setOpenFileCallback([](const String& absPath) {
+        lvReaderScreen.setPath(absPath);
+        ui.setScreen(&lvReaderScreen);
+    });
+    lvFilesScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+
+    // Reader — plain-text viewer; BACK → Files (tabs stay hidden).
+    lvReaderScreen.setSDStore(&sdStore);
+    lvReaderScreen.setUIManager(&ui);
+    lvReaderScreen.setBackCallback([]() {
+        ui.setScreen(&lvFilesScreen);
     });
 
     // Notes list — full-screen app-mode. Tapping NEW (or a row) routes
