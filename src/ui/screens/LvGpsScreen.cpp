@@ -3,6 +3,7 @@
 #include "ui/LvTheme.h"
 #include "ui/Theme.h"
 #include "fonts/fonts.h"
+#include "util/CoordFormat.h"
 
 #include <stdio.h>
 
@@ -16,16 +17,6 @@ constexpr lv_coord_t kBodyY = 28;
 constexpr lv_coord_t kAppContentH = Theme::SCREEN_H - Theme::STATUS_BAR_H;  // 220
 constexpr lv_coord_t kBtnH = 28;
 constexpr lv_coord_t kBtnY = kAppContentH - kBtnH - 6;
-
-const char* qualityLabel(uint8_t q) {
-    switch (q) {
-        case 0: return "NONE";
-        case 1: return "GPS";
-        case 2: return "DGPS";
-        case 6: return "EST";
-        default: return "OTHER";
-    }
-}
 
 }  // namespace
 
@@ -156,7 +147,7 @@ void LvGpsScreen::refreshUI() {
 void LvGpsScreen::rebuild() {
     if (!_body) return;
 
-    char buf[512];
+    char buf[640];
     if (!_gps) {
         lv_label_set_text(_body, "GPS unavailable");
         return;
@@ -166,68 +157,53 @@ void LvGpsScreen::rebuild() {
     const bool fix = _gps->hasLocationFix();
     const int sats = _gps->satellites();
     const double alt = _gps->altitude();
-    const double hdop = _gps->hdop();
-    const uint8_t q = _gps->fixQuality();
-    const uint32_t age = _gps->fixAgeMs();
-    const uint32_t chars = _gps->charsProcessed();
+    const double lat = _gps->latitude();
+    const double lon = _gps->longitude();
 
     const char* fixStr;
     if (!running) {
-        fixStr = "STOPPED";
+        fixStr = "OFF";
     } else if (fix) {
-        fixStr = "VALID";
+        fixStr = "FIX";
     } else {
-        fixStr = "SEARCHING";
+        fixStr = "SEARCH";
     }
 
-    char altStr[24];
+    char status[80];
     if (fix) {
-        snprintf(altStr, sizeof(altStr), "%.0f m", alt);
+        snprintf(status, sizeof(status), "%s  %d sats  %.0f m", fixStr, sats, alt);
     } else {
-        snprintf(altStr, sizeof(altStr), "--");
+        snprintf(status, sizeof(status), "%s  %d sats", fixStr, sats);
     }
 
-    char hdopStr[24];
-    if (fix && hdop < 90.0) {
-        snprintf(hdopStr, sizeof(hdopStr), "%.1f", hdop);
-    } else {
-        snprintf(hdopStr, sizeof(hdopStr), "--");
+    if (!fix) {
+        snprintf(buf, sizeof(buf),
+                 "%s\n\nNo fix — waiting for satellites",
+                 status);
+        lv_label_set_text(_body, buf);
+        return;
     }
 
-    char ageStr[24];
-    if (fix) {
-        snprintf(ageStr, sizeof(ageStr), "%lu s", (unsigned long)(age / 1000));
-    } else {
-        snprintf(ageStr, sizeof(ageStr), "--");
-    }
+    char dd[72], dm[80], dms[80], plus[24], utm[48];
+    CoordFormat::formatDD(dd, sizeof(dd), lat, lon);
+    CoordFormat::formatDM(dm, sizeof(dm), lat, lon);
+    CoordFormat::formatDMS(dms, sizeof(dms), lat, lon);
+    CoordFormat::formatPlusCode(plus, sizeof(plus), lat, lon);
+    CoordFormat::formatUTM(utm, sizeof(utm), lat, lon);
 
-    // No lat/lon — PII. Position lives on Map only.
     snprintf(buf, sizeof(buf),
-             "MODULE   %s\n"
-             "FIX      %s\n"
-             "SATS     %d\n"
-             "QUALITY  %s\n"
-             "HDOP     %s\n"
-             "ALT      %s\n"
-             "AGE      %s\n"
-             "NMEA     %lu chars\n"
-             "\n"
-             "Position on Map only\n"
-             "(no coords here)",
-             running ? "ON" : "OFF",
-             fixStr,
-             sats,
-             qualityLabel(q),
-             hdopStr,
-             altStr,
-             ageStr,
-             (unsigned long)chars);
+             "%s\n\n"
+             "DD\n%s\n\n"
+             "DM\n%s\n\n"
+             "DMS\n%s\n\n"
+             "PLUS  %s\n"
+             "UTM   %s",
+             status, dd, dm, dms, plus, utm);
 
     lv_label_set_text(_body, buf);
 }
 
 bool LvGpsScreen::handleKey(const KeyEvent& event) {
-    // Match Files/Reader: Esc / Del / BS → BACK.
     if (event.character == 0x1B || event.del || event.character == 0x08) {
         if (_onBack) {
             _onBack();

@@ -4,9 +4,8 @@
 #include <functional>
 
 // =============================================================================
-// GPS status app — full-screen (tab bar hidden). Fix / sats / alt / HDOP /
-// quality / time — never lat/lon (PII). BACK → Apps. OPEN MAP → Map app-mode.
-// Mirrors Pro ScreenGps product scope.
+// GPS app — full-screen (tab bar hidden). Basic fix status + coordinates in
+// DD / DM / DMS / Plus Code / UTM. BACK → Apps. OPEN MAP → Map app-mode.
 // =============================================================================
 
 class GPSManager;
