@@ -9,24 +9,25 @@
 namespace {
 
 // =============================================================================
-// Layout — 320×194 content area (with tab bar visible). Five tiles fit
-// in a 2-col, 3-row grid; bottom-right cell intentionally empty.
+// Layout — 320×194 content area (with tab bar visible). Six tiles fit
+// in a 2-col, 3-row grid.
 //
 // Tightened from the prior numbers (kPad=6, kTitleH=22, kTileH=52, kGap=6)
-// so the last row (Encrypt) sits ~16 px above the tab bar instead of
-// being visually flush with it. Theme's base spacing unit is 4 px
-// (Theme::SP_1=4), so kPad/kGap use that unit directly for visual rhythm.
+// so the last row (Encrypt) sits ~8 px above the tab bar. Theme's base
+// spacing unit is 4 px (Theme::SP_1=4), so kPad/kGap use that unit
+// directly for visual rhythm. With 6 tiles (3 rows) the tile height is
+// dropped to 46 px to keep clearance under CONTENT_H=194.
 // =============================================================================
 constexpr lv_coord_t kPad         = 4;
 constexpr lv_coord_t kTitleH      = 18;     // title strip (label sits at y=2)
 constexpr lv_coord_t kGridY       = kTitleH + 2;   // 2 px gutter under title
 constexpr lv_coord_t kGap         = 4;
 constexpr lv_coord_t kCols        = 2;
-constexpr lv_coord_t kTileH       = 50;
+constexpr lv_coord_t kTileH       = 46;
 constexpr lv_coord_t kTileW       = (Theme::CONTENT_W - (kPad * 2) - kGap) / kCols;  // 154
 
-// Bottom-of-row-3 = kGridY + 2*(kTileH+kGap) + kTileH = 20 + 2*54 + 50 = 178.
-// CONTENT_H=194 → 16 px clearance to the tab bar (>= the 6-8 px the task asked for).
+// Bottom-of-row-3 = kGridY + 2*(kTileH+kGap) + kTileH = 20 + 2*50 + 46 = 186.
+// CONTENT_H=194 → 8 px clearance to the tab bar.
 
 // Tile names + soon-flag — declared in display order (top→bottom,
 // left→right) so the on-screen grid mirrors this array.
@@ -40,6 +41,7 @@ constexpr TileSpec kSpecs[LvAppsScreen::TILE_COUNT] = {
     {"Notes",   false},   // live — see LvNotesListScreen / LvNotesEditScreen
     {"Files",   false},   // live — see LvFilesScreen / LvReaderScreen
     {"GPS",     false},   // live — see LvGpsScreen
+    {"Voice",   false},   // live — see LvVoiceScreen (decode/play only)
     {"Encrypt", true},
 };
 
@@ -130,6 +132,9 @@ void LvAppsScreen::createUI(lv_obj_t* parent) {
                                     else if (self->_ui) self->_ui->lvStatusBar().showToast("Coming soon", 1500);
                                     break;
                 case TILE_GPS:     if (self->_onOpenGps)     self->_onOpenGps();
+                                    else if (self->_ui) self->_ui->lvStatusBar().showToast("Coming soon", 1500);
+                                    break;
+                case TILE_VOICE:   if (self->_onOpenVoice)   self->_onOpenVoice();
                                     else if (self->_ui) self->_ui->lvStatusBar().showToast("Coming soon", 1500);
                                     break;
                 case TILE_ENCRYPT: if (self->_onOpenEncrypt) self->_onOpenEncrypt();
@@ -225,6 +230,9 @@ bool LvAppsScreen::handleKey(const KeyEvent& event) {
                                 else if (_ui) _ui->lvStatusBar().showToast("Coming soon", 1500);
                                 break;
             case TILE_GPS:     if (_onOpenGps) _onOpenGps();
+                                else if (_ui) _ui->lvStatusBar().showToast("Coming soon", 1500);
+                                break;
+            case TILE_VOICE:   if (_onOpenVoice) _onOpenVoice();
                                 else if (_ui) _ui->lvStatusBar().showToast("Coming soon", 1500);
                                 break;
             case TILE_ENCRYPT: if (_onOpenEncrypt) _onOpenEncrypt();

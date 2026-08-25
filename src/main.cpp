@@ -46,6 +46,7 @@
 #include "ui/screens/LvFilesScreen.h"
 #include "ui/screens/LvReaderScreen.h"
 #include "ui/screens/LvGpsScreen.h"
+#include "ui/screens/LvVoiceScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "storage/MessageStore.h"
@@ -148,6 +149,7 @@ LvReaderScreen lvReaderScreen;
 #if HAS_GPS
 LvGpsScreen lvGpsScreen;
 #endif
+LvVoiceScreen lvVoiceScreen;
 LvNameInputScreen lvNameInputScreen;
 LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
@@ -2245,6 +2247,19 @@ void setup() {
         ui.setScreen(&lvMapScreen);
     });
 #endif
+
+    // Voice app — decode/play only (Plus has no mic). BACK → Apps.
+    lvAppsScreen.setOpenVoiceCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvVoiceScreen);
+    });
+    lvVoiceScreen.setAudio(&audio);
+    lvVoiceScreen.setUIManager(&ui);
+    lvVoiceScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
 
     // Notes list — full-screen app-mode. Tapping NEW (or a row) routes
     // to the editor; BACK routes back to Apps (showing the tab bar).
