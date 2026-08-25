@@ -5,6 +5,7 @@
 #include <time.h>
 #include <algorithm>
 #include <exception>
+#include <string.h>
 
 LXMFManager* LXMFManager::_instance = nullptr;
 std::map<std::string, LXMFManager::PendingProof> LXMFManager::_pendingProofs;
@@ -65,10 +66,29 @@ void LXMFManager::loop() {
     int processed = 0;
 
     for (auto it = _outQueue.begin(); it != _outQueue.end(); ) {
-        // Time-budgeted: process up to 3 messages within 10ms
-        if (processed >= 3 || (processed > 0 && millis() - now >= 10)) break;
-
         LXMFMessage& msg = *it;
+
+        // Voice-memo C2P chunks on first attempt: TCP drains fast (up to 16);
+        // LoRa is half-duplex — one chunk per tick, only when TX queue empty.
+        const bool isFastC2P = msg.retries == 0
+            && msg.content.size() >= 4
+            && msg.content[0] == 'C' && msg.content[1] == '2'
+            && msg.content[2] == 'P' && msg.content[3] == ' ';
+        if (isFastC2P) {
+            const bool loraHop = _rns && _rns->isLoRaNextHop(msg.destHash);
+            if (loraHop) {
+                if (processed >= 1) break;
+                if (_rns->loraInterface()
+                    && _rns->loraInterface()->txQueueDepth() > 0) {
+                    break;
+                }
+            } else {
+                if (processed >= 16) break;
+            }
+        } else {
+            // Time-budgeted: process up to 3 messages within 10ms.
+            if (processed >= 3 || (processed > 0 && millis() - now >= 10)) break;
+        }
 
         // Keep unresolved peers from churning the UI loop or LoRa airtime.
         // The first attempt is immediate; later path/identity retries happen
@@ -139,9 +159,16 @@ bool LXMFManager::sendMessage(const RNS::Bytes& destHash, const std::string& con
     }
 
     _outQueue.push_back(msg);
-    // Immediately save with QUEUED status so it appears in getMessages() right away
-    // Save the queue copy so savedCounter propagates back to the queued message
-    if (_store) { _store->saveMessage(_outQueue.back()); }
+    // Voice-memo chunks ("C2P <id8hex> <i>/<n> <b64>") are transport
+    // fragments — saving every chunk would create N unread bubbles in the
+    // sender's chat. Skip persistence here; the receive side synthesizes
+    // ONE display-only "[voice memo]" MessageStore entry when the
+    // reassembler returns Complete, and the sender's outbound view shows
+    // a single placeholder too. Non-C2P messages keep the existing
+    // immediately-save behavior so getMessages() reflects them right away.
+    const bool isVoiceChunk = msg.content.size() >= 4
+        && memcmp(msg.content.data(), "C2P ", 4) == 0;
+    if (_store && !isVoiceChunk) { _store->saveMessage(_outQueue.back()); }
 
     if (!RNS::Transport::has_path(destHash)) {
         Serial.printf("[LXMF] Message queued for %s; path discovery will retry every 10s\n",
@@ -332,6 +359,13 @@ bool LXMFManager::attemptOutboundDelivery(LXMFMessage& msg) {
         const bool loraPath = _rns && _rns->isLoRaNextHop(msg.destHash);
         const uint8_t hops = RNS::Transport::hops_to(msg.destHash);
 
+        // Voice-memo chunks ("C2P <id8hex> <i>/<n> <b64>"). Identified
+        // once up front so both the single-frame check and the overflow
+        // branch below can branch on it.
+        static constexpr const char* kVoiceChunkPrefix = "C2P ";
+        const bool isVoiceChunk = msg.content.size() >= 4
+            && memcmp(msg.content.data(), kVoiceChunkPrefix, 4) == 0;
+
         if (!opportunisticPayloadFits) {
             Serial.printf("[LXMF] Opportunistic payload exceeds MDU: payload=%d mdu=%u\n",
                           (int)payloadBytes.size(), (unsigned)RNS::Type::Reticulum::MDU);
@@ -350,8 +384,17 @@ bool LXMFManager::attemptOutboundDelivery(LXMFMessage& msg) {
                 Serial.printf("[LXMF] Opportunistic pack failed (%s); trying link delivery\n", e.what());
             }
 
+            // Voice-memo chunks can be a bit larger than a normal chat
+            // message because each chunk is one base64 slice (~120 b64
+            // chars after shrink) plus short framing. Widen the
+            // single-frame cap to 2x so they still take the opportunistic
+            // path on LoRa instead of being forced into link/resource
+            // transfer.
+            const size_t singleFrameCap = isVoiceChunk
+                ? (RSDECK_RNODE_SINGLE_FRAME_RAW_MAX * 2)
+                : RSDECK_RNODE_SINGLE_FRAME_RAW_MAX;
             const bool singleFrameSafe = packetPacked && (!loraPath
-                || estimatedLoRaRawLen <= RSDECK_RNODE_SINGLE_FRAME_RAW_MAX);
+                || estimatedLoRaRawLen <= singleFrameCap);
 
             if (singleFrameSafe) {
                 Serial.printf("[LXMF] sending opportunistic: payload=%d raw=%u lora_raw=%u lora=%s hops=%u to %s\n",
@@ -365,13 +408,39 @@ bool LXMFManager::attemptOutboundDelivery(LXMFMessage& msg) {
         }
 
         if (!sent) {
+            // Voice chunks NEVER fall to link/resource transfer. Link
+            // establishment adds 1-3 RTTs and burns airtime — voice
+            // chunks must be dropped opportunistically or not at all.
+            // If the chunk is too big for a single LoRa frame at this
+            // moment we just leave it queued and retry on the next loop;
+            // shrinking kChunkB64Max to 120 in VoiceMemo.h keeps us
+            // comfortably under the 508-byte (2x single-frame) cap.
+            if (isVoiceChunk) {
+                Serial.printf("[LXMF] voice chunk over single-frame cap: payload=%d raw=%u lora_raw=%u limit=%u lora=%s hops=%u retry=%d (queued, no link fall)\n",
+                              (int)payloadBytes.size(), (unsigned)rawLen,
+                              (unsigned)estimatedLoRaRawLen,
+                              (unsigned)(RSDECK_RNODE_SINGLE_FRAME_RAW_MAX * 2),
+                              loraPath ? "yes" : "no", (unsigned)hops, msg.retries);
+                msg.retries++;
+                // Give up after a long stretch — no link fallback ever,
+                // so we don't want to spin forever.
+                if (msg.retries >= 30) {
+                    Serial.printf("[LXMF] voice chunk for %s never fit single frame after %d retries — FAILED\n",
+                                  msg.destHash.toHex().substr(0, 8).c_str(), msg.retries);
+                    msg.status = LXMFStatus::FAILED;
+                    return true;
+                }
+                return false;  // Keep in queue, retry next loop
+            }
+
             // Too large for single-frame LoRa, or too large for an opportunistic
             // Reticulum packet. Use link/resource delivery so packet loss is
             // recoverable above the physical RNode split-frame layer.
+            const size_t singleFrameCap = RSDECK_RNODE_SINGLE_FRAME_RAW_MAX;
             Serial.printf("[LXMF] Message needs link delivery: payload=%d raw=%u lora_raw=%u limit=%u lora=%s hops=%u retry=%d\n",
                           (int)payloadBytes.size(), (unsigned)rawLen,
                           (unsigned)estimatedLoRaRawLen,
-                          (unsigned)RSDECK_RNODE_SINGLE_FRAME_RAW_MAX,
+                          (unsigned)singleFrameCap,
                           loraPath ? "yes" : "no", (unsigned)hops, msg.retries);
             if (msg.retries % 3 == 0 && (!_outLink || _outLinkDestHash != msg.destHash
                 || _outLink.status() != RNS::Type::Link::ACTIVE)) {
@@ -418,6 +487,8 @@ void LXMFManager::onPacketReceived(const RNS::Bytes& data, const RNS::Packet& pa
 
 void LXMFManager::onOutLinkEstablished(RNS::Link& link) {
     if (!_instance) return;
+    // Accept inbound resources on this link too (peer may send voice back).
+    link.set_resource_strategy(RNS::Type::Link::ACCEPT_ALL);
     _instance->_outLink = link;
     _instance->_outLinkDestHash = _instance->_outLinkPendingHash;
     _instance->_outLinkPending = false;
@@ -438,6 +509,10 @@ void LXMFManager::onLinkEstablished(RNS::Link& link) {
     if (!_instance) return;
     Serial.printf("[LXMF-DIAG] onLinkEstablished fired! link_id=%s status=%d\n",
         link.link_id().toHex().substr(0, 16).c_str(), (int)link.status());
+    // Default link resource_strategy is ACCEPT_NONE — voice memos (and any
+    // payload > Link MDU) arrive as RESOURCE_ADV and are silently dropped
+    // unless we accept them. ACCEPT_ALL is required for Codec2 voice path.
+    link.set_resource_strategy(RNS::Type::Link::ACCEPT_ALL);
     link.set_packet_callback([](const RNS::Bytes& data, const RNS::Packet& packet) {
         if (!_instance) return;
         Serial.printf("[LXMF-DIAG] Link packet received! %d bytes pkt_dest=%s\n",
@@ -493,8 +568,16 @@ void LXMFManager::processIncoming(const uint8_t* data, size_t len, const RNS::By
     }
     Serial.printf("[LXMF] Message from %s (%d bytes) content_len=%d\n",
                   msg.sourceHash.toHex().substr(0, 8).c_str(), (int)len, (int)msg.content.size());
-    if (_store) { _store->saveMessage(msg); }
+    // Voice-memo chunks ("C2P ...") are reassembled by VoiceMemo::ingest()
+    // inside the _onMessage callback — the caller (main.cpp) reads each
+    // chunk and emits ONE synthetic "[voice memo]" MessageStore entry when
+    // the full set arrives. Persisting every raw chunk here would create
+    // N unread bubbles per memo. Fire the callback first so ingest sees
+    // the full content; non-C2P messages keep the existing order.
+    const bool isVoiceChunk = msg.content.size() >= 4
+        && memcmp(msg.content.data(), "C2P ", 4) == 0;
     if (_onMessage) { _onMessage(msg); }
+    if (_store && !isVoiceChunk) { _store->saveMessage(msg); }
 }
 
 const std::vector<std::string>& LXMFManager::conversations() const {

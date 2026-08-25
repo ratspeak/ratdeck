@@ -47,16 +47,6 @@ void setErr(Result& r, const char* msg) {
   r.err[sizeof(r.err) - 1] = 0;
 }
 
-// Plus: SD is owned by SDStore (mounted at boot). mkdir() on an existing
-// dir returns false but exists() is true — accept either.
-bool ensureVoiceDirs() {
-  SD.mkdir("/Files");
-  if (!SD.exists("/Files")) return false;
-  SD.mkdir("/Files/voice");
-  if (!SD.exists("/Files/voice")) return false;
-  return true;
-}
-
 void feedWdt() {
   yield();
   esp_task_wdt_reset();
@@ -650,6 +640,18 @@ Result runOnWorker(JobOp op, const char* a, const char* b, const char* c) {
 }
 
 }  // namespace
+
+// Plus: SD is owned by SDStore (mounted at boot). mkdir() on an existing
+// dir returns false but exists() is true — accept either. Defined at
+// namespace scope (not anonymous) so callers outside this TU can call it
+// via Codec2Voice::ensureVoiceDirs().
+bool ensureVoiceDirs() {
+  SD.mkdir("/Files");
+  if (!SD.exists("/Files")) return false;
+  SD.mkdir("/Files/voice");
+  if (!SD.exists("/Files/voice")) return false;
+  return true;
+}
 
 Result encodeWavToC2(const char* wavPath, const char* c2Path) {
   return runOnWorker(JobOp::Encode, wavPath, c2Path, nullptr);

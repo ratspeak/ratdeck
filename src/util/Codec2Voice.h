@@ -40,4 +40,10 @@ Result roundTripFiles(const char* wavIn, const char* c2Path = kProbeC2Path,
 
 bool c2Exists(const char* path = kProbeC2Path);
 
+// Ensure /Files and /Files/voice exist on SD so callers (LXMF ingest,
+// decode, encode) can write into them without racing boot. Returns false
+// if SD mkdir / exists checks fail. SD.mkdir() on an existing dir
+// returns false but exists() then returns true — accept either.
+bool ensureVoiceDirs();
+
 }  // namespace Codec2Voice

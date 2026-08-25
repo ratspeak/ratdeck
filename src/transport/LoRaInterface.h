@@ -27,6 +27,11 @@ public:
     float singleFrameAirtimeMs() const { return _singleFrameAirtimeMs; }
     uint32_t bitrate() const { return _bitrate; }
 
+    // TX queue depth probes — LXMFManager paces C2P drain so voice chunks
+    // are not pushed faster than the radio can air them.
+    int txQueueDepth() const { return (int)_txQueue.size(); }
+    int txQueueFree() const { return TX_QUEUE_MAX - (int)_txQueue.size(); }
+
 protected:
     virtual void send_outgoing(const RNS::Bytes& data) override;
 
@@ -39,8 +44,10 @@ private:
     bool _txPending = false;
     RNS::Bytes _txData;
 
-    // TX queue: buffer packets when radio is busy instead of dropping
-    static constexpr int TX_QUEUE_MAX = 4;
+    // TX queue: buffer packets when radio is busy instead of dropping.
+    // 24 covers a worst-case voice-memo send (16 C2P chunks) plus headroom.
+    // Overflow rejects newest (not drop-oldest) so in-flight memos stay intact.
+    static constexpr int TX_QUEUE_MAX = 24;
     std::deque<RNS::Bytes> _txQueue;
 
     // Split-packet TX state: when a packet > 254 bytes, send in two LoRa frames

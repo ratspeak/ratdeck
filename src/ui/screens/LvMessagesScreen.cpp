@@ -7,6 +7,7 @@
 #include "reticulum/LXMFManager.h"
 #include "reticulum/AnnounceManager.h"
 #include "storage/MessageStore.h"
+#include "util/VoiceMemo.h"
 #include <Arduino.h>
 #include <time.h>
 #include <algorithm>
@@ -207,7 +208,14 @@ void LvMessagesScreen::rebuildList() {
         auto* s = _lxmf->getConversationSummary(ci.peerHex);
         if (s) {
             ci.lastTs = s->lastTimestamp;
-            ci.preview = chatPreviewText(s->lastPreview, 56);
+            // Voice memos carry a base64 payload in the preview column;
+            // collapse that to the human-readable label so the chat row
+            // doesn't show a wall of encoded text.
+            std::string previewRaw = s->lastPreview;
+            if (VoiceMemo::isVoiceMemo(previewRaw)) {
+                previewRaw = VoiceMemo::displayText();
+            }
+            ci.preview = chatPreviewText(previewRaw, 56);
             ci.lastIncoming = s->lastIncoming;
             ci.unreadCount = s->unreadCount;
             ci.totalCount = s->totalCount;
