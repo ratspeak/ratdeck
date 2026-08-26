@@ -556,7 +556,7 @@ bool AudioNotify::playWav(const char* path) {
       (long)rmsActive, (unsigned long)actPct, (double)gainQ8 / 256.0,
       (long)rmsOutEst, useRms ? "rms" : "peak-fb");
 
-  // Reinstall I2S for a clean state — codec2 decode may have left the
+  // Reinstall I2S for a clean state — heavy SD read loops can leave the
   // DMA chain idle but warm; this resets TX state.
   end();
   delay(10);

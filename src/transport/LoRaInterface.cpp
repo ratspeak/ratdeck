@@ -66,9 +66,10 @@ void LoRaInterface::send_outgoing(const RNS::Bytes& data) {
             }
         } else {
             // Queue full — reject the NEW packet rather than drop-oldest.
-            // Drop-oldest silently corrupts in-flight voice memos by losing
-            // a chunk mid-stream; reject-newest lets the caller retry once
-            // the radio drains. Do not call handle_outgoing on reject.
+            // Drop-oldest silently corrupts an in-flight burst send by
+            // dropping a message mid-sequence; reject-newest lets the
+            // caller retry once the radio drains. Do not call
+            // handle_outgoing on reject.
             Serial.printf("[LORA_IF] TX queue full (%d), rejecting new packet (%d bytes)\n",
                 (int)_txQueue.size(), (int)data.size());
         }

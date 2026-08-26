@@ -19,7 +19,6 @@ public:
         TILE_NOTES,
         TILE_FILES,
         TILE_GPS,
-        TILE_VOICE,
         TILE_ENCRYPT,
         TILE_COUNT
     };
@@ -39,7 +38,6 @@ public:
     void setOpenNotesCallback(TileCallback cb)   { _onOpenNotes = cb; }
     void setOpenFilesCallback(TileCallback cb)   { _onOpenFiles = cb; }
     void setOpenGpsCallback(TileCallback cb)     { _onOpenGps = cb; }
-    void setOpenVoiceCallback(TileCallback cb)   { _onOpenVoice = cb; }
     void setOpenEncryptCallback(TileCallback cb) { _onOpenEncrypt = cb; }
 
     const char* title() const override { return "Apps"; }
@@ -60,7 +58,6 @@ private:
     TileCallback _onOpenNotes;
     TileCallback _onOpenFiles;
     TileCallback _onOpenGps;
-    TileCallback _onOpenVoice;
     TileCallback _onOpenEncrypt;
 
     TileWidgets _tiles[TILE_COUNT] = {};

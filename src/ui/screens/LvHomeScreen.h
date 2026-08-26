@@ -54,14 +54,6 @@ private:
     std::function<void()> _gpsToggleCb;
     std::function<void()> _peersCb;
     GPSManager* _gps = nullptr;
-    // GPS status display state — decoupled from GPSManager::fixAgeMs()
-    // (which resets on every ~1Hz NMEA sentence and would jitter the UI).
-    // Instead we show a sticky "checkpoint" counter: while receiving,
-    // it counts 0s -> 30s; at the 30s mark it either resets to 0s (if
-    // still receiving) or flips to STALE and keeps counting up from
-    // there uninterrupted until a fresh fix arrives again.
-    unsigned long _gpsCheckpointMs = 0;
-    bool _gpsCheckpointSet = false;
     unsigned long _lastRefreshMs = 0;
     unsigned long _lastUptime = 0;
     uint32_t _lastHeap = 0;

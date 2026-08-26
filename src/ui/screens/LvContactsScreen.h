@@ -13,10 +13,6 @@ class LvContactsScreen : public LvScreen {
 public:
     using NodeSelectedCallback = std::function<void(const std::string& peerHex)>;
     using SendGpsCallback = std::function<void(const std::string& peerHex)>;
-    // Send the canned voice memo (Codec2 file on SD) to a peer via LXMF.
-    // Wired by main.cpp — it knows about Codec2Voice, VoiceMemo, lxmf,
-    // and announceManager.
-    using SendVoiceCallback = std::function<void(const std::string& peerHex)>;
 
     void createUI(lv_obj_t* parent) override;
     void destroyUI() override;
@@ -27,7 +23,6 @@ public:
     void setAnnounceManager(AnnounceManager* am) { _am = am; }
     void setNodeSelectedCallback(NodeSelectedCallback cb) { _onSelect = cb; }
     void setSendGpsCallback(SendGpsCallback cb) { _onSendGps = cb; }
-    void setSendVoiceCallback(SendVoiceCallback cb) { _onSendVoice = cb; }
     void setShowQrCallback(std::function<void()> cb) { _showQrCb = cb; }
     void setUIManager(class UIManager* ui) { _ui = ui; }
     bool handleLongPress() override;
@@ -42,14 +37,13 @@ private:
     void updateMenuSelection();
     void updateNicknameDisplay();
     void updateOverlayDetails(const char* title);
-    int menuEntryCount() const { return 6; }  // Msg/GPS/Voice/Edit/Remove/Close
+    int menuEntryCount() const { return 5; }  // Msg/GPS/Edit/Remove/Close
     int nodeIdxFromList(int listIdx) const;
 
     AnnounceManager* _am = nullptr;
     class UIManager* _ui = nullptr;
     NodeSelectedCallback _onSelect;
     SendGpsCallback _onSendGps;
-    SendVoiceCallback _onSendVoice;
     std::function<void()> _showQrCb;
     bool _confirmDelete = false;
     bool _focusActive = false;
@@ -66,7 +60,7 @@ private:
     int _actionListIdx = -1;  // index into _contactIndices
     String _nicknameText;
 
-    static constexpr int MAX_MENU_ENTRIES = 6;
+    static constexpr int MAX_MENU_ENTRIES = 5;
     lv_obj_t* _overlay = nullptr;
     lv_obj_t* _overlayTitle = nullptr;
     lv_obj_t* _overlayMeta = nullptr;

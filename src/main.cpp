@@ -46,7 +46,6 @@
 #include "ui/screens/LvFilesScreen.h"
 #include "ui/screens/LvReaderScreen.h"
 #include "ui/screens/LvGpsScreen.h"
-#include "ui/screens/LvVoiceScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "storage/MessageStore.h"
@@ -72,8 +71,6 @@
 #include "util/PerfTrace.h"
 #include "util/LocationParse.h"
 #include "util/FileCrypto.h"
-#include "util/VoiceMemo.h"
-#include "util/Codec2Voice.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <atomic>
@@ -129,11 +126,6 @@ Power powerMgr;
 AudioNotify audio;
 IdentityManager identityMgr;
 
-// Inbound voice memo: the LXMF callback writes the received .c2 path
-// here and main loop() decodes + plays it on the next iteration. We must
-// never touch I2S / SD from inside a packet callback (it can stall the
-// RNS receiver), so the dispatch is deferred to the main loop.
-static char s_pendingVoicePath[64] = {0};
 TelemetryManager telemetryManager;
 #if HAS_GPS
 GPSManager gps;
@@ -158,7 +150,6 @@ LvReaderScreen lvReaderScreen;
 #if HAS_GPS
 LvGpsScreen lvGpsScreen;
 #endif
-LvVoiceScreen lvVoiceScreen;
 LvNameInputScreen lvNameInputScreen;
 LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
@@ -1738,7 +1729,7 @@ void setup() {
     bootTraceStage("message-store");
 
     // Step 17: LXMF init
-    lxmf.begin(&rns, &messageStore);
+lxmf.begin(&rns, &messageStore);
     lxmf.setMessageCallback([](const LXMFMessage& msg) {
         Serial.printf("[LXMF] Message from %s\n", msg.sourceHash.toHex().substr(0, 8).c_str());
         // Peer-on-map (rsDeck #64): parse the message body for a single
@@ -1757,63 +1748,6 @@ void setup() {
                     Serial.printf("[MAP] contact location updated from %s\n",
                                   hex.substr(0, 8).c_str());
                 }
-            }
-        }
-        // Voice memo wire format — legacy ("C2 " + base64 of full .c2) or
-        // chunked ("C2P <id8hex> <i>/<n> <b64-slice>"). The reassembler is
-        // single-flight inside VoiceMemo::ingest(); chunks for the same id
-        // accumulate, and when all parts arrive the assembled .c2 lands at
-        // /Files/voice/rx_<8hex>.c2 so main loop() can decode+play it off
-        // the packet-callback thread. Touching I2S from here can stall the
-        // RNS receiver, hence the deferred-play design.
-        //
-        // Raw C2P chunks are NOT saved by LXMFManager::processIncoming
-        // (it skips persistence for "C2P ..." so we don't spam the chat
-        // with N unread bubbles per memo). On Complete we synthesize ONE
-        // display-only inbound MessageStore entry with content =
-        // VoiceMemo::displayText() so the chat shows a single
-        // "[voice memo]" bubble. The actual .c2 bytes live on SD at
-        // s_pendingVoicePath; the bubble is purely a UI marker.
-        if (VoiceMemo::isVoiceMemo(msg.content)) {
-            char path[64];
-            std::string hex = msg.sourceHash.toHex();
-            // Make sure the rx dir exists before ingest tries to write —
-            // legacy single-message receipts also land here.
-            Codec2Voice::ensureVoiceDirs();
-            VoiceMemo::IngestResult r =
-                VoiceMemo::ingest(msg.content, hex.c_str(), path, sizeof(path));
-            if (r == VoiceMemo::IngestResult::Complete) {
-                Serial.printf("[voice] complete path=%s play staged\n", path);
-                strncpy(s_pendingVoicePath, path, sizeof(s_pendingVoicePath) - 1);
-                s_pendingVoicePath[sizeof(s_pendingVoicePath) - 1] = '\0';
-                // Synthesize one display-only inbound message so the chat
-                // shows a single bubble with the human-readable label.
-                // Source hash = peer; content = "[voice memo]";
-                // timestamp + msgId carried from the last chunk so the
-                // bubble sorts with the rest of the conversation.
-                LXMFMessage bubble;
-                bubble.sourceHash = msg.sourceHash;
-                bubble.destHash = msg.destHash;
-                bubble.timestamp = msg.timestamp;
-                bubble.content = VoiceMemo::displayText();
-                bubble.title = "";
-                bubble.incoming = true;
-                bubble.read = false;
-                bubble.status = LXMFStatus::DELIVERED;
-                bubble.messageId = msg.messageId;
-                if (messageStore.saveMessage(bubble)) {
-                    Serial.printf("[voice] bubble saved peer=%s counter=%lu\n",
-                                  hex.substr(0, 8).c_str(),
-                                  (unsigned long)bubble.savedCounter);
-                } else {
-                    Serial.println("[voice] bubble save FAILED");
-                }
-            } else if (r == VoiceMemo::IngestResult::Incomplete) {
-                Serial.printf("[voice] rx chunk from %s, more parts pending\n",
-                              hex.substr(0, 8).c_str());
-            } else if (r == VoiceMemo::IngestResult::Fail) {
-                Serial.printf("[voice] rx ingest FAILED from %s\n",
-                              hex.substr(0, 8).c_str());
             }
         }
         ui.lvTabBar().setUnreadCount(LvTabBar::TAB_MSGS, lxmf.unreadCount());
@@ -2219,54 +2153,6 @@ void setup() {
         ui.lvStatusBar().showToast("GPS sent", 1200);
     });
 #endif
-    // Send Voice from Contacts action modal. Pack the on-SD probe.c2 into
-    // chunked wire format ("C2P <id8hex> <i>/<n> <b64-slice>") and dispatch
-    // each chunk via opportunistic LXMF (NOT link/resource — voice
-    // chunks never fall to link delivery; see LXMFManager). The wire
-    // format must match Pro exactly. Each slice is small enough to fit a
-    // single LoRa RF frame. Plus has no mic — the user copies probe.c2
-    // onto /Files/voice/ from a PC, or receives a .c2 from Pro and re-sends
-    // it.
-    lvContactsScreen.setSendVoiceCallback([](const std::string& peerHex) {
-        if (!Codec2Voice::c2Exists()) {
-            ui.lvStatusBar().showToast("No voice memo", 1500);
-            return;
-        }
-        std::vector<std::string> chunks =
-            VoiceMemo::packChunksFromFile(Codec2Voice::kProbeC2Path);
-        if (chunks.empty()) {
-            ui.lvStatusBar().showToast("Voice pack fail", 1500);
-            return;
-        }
-        ui.lvStatusBar().showToast("SENDING", 1200);
-        RNS::Bytes destHash;
-        destHash.assignHex(peerHex.c_str());
-        if (announceManager) announceManager->ensureSavedContact(peerHex);
-        // Opportunistic only — never ViaLink for voice chunks. Chunks that
-        // are too big for the single-frame cap stay queued (LXMFManager
-        // logs the overflow and refuses to link-deliver).
-        bool allOk = true;
-        size_t sent = 0;
-        for (const auto& c : chunks) {
-            if (lxmf.sendMessage(destHash, c)) {
-                ++sent;
-            } else {
-                allOk = false;
-                break;
-            }
-        }
-        Serial.printf("[voice] sent %u/%u chunks to %s\n",
-                      (unsigned)sent, (unsigned)chunks.size(),
-                      peerHex.substr(0, 8).c_str());
-        if (allOk) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "SENT %u", (unsigned)chunks.size());
-            ui.lvStatusBar().showToast(buf, 1200);
-        } else {
-            ui.lvStatusBar().showToast("FAIL", 1500);
-        }
-    });
-
     lvNodesScreen.setAnnounceManager(announceManager);
     lvNodesScreen.setUIManager(&ui);
     lvNodesScreen.setUserConfig(&userConfig);
@@ -2360,19 +2246,6 @@ void setup() {
         ui.setScreen(&lvMapScreen);
     });
 #endif
-
-    // Voice app — decode/play only (Plus has no mic). BACK → Apps.
-    lvAppsScreen.setOpenVoiceCallback([]() {
-        ui.setTabBarVisible(false);
-        ui.setScreen(&lvVoiceScreen);
-    });
-    lvVoiceScreen.setAudio(&audio);
-    lvVoiceScreen.setUIManager(&ui);
-    lvVoiceScreen.setBackCallback([]() {
-        ui.setTabBarVisible(true);
-        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
-        ui.setScreen(&lvAppsScreen);
-    });
 
     // Notes list — full-screen app-mode. Tapping NEW (or a row) routes
     // to the editor; BACK routes back to Apps (showing the tab bar).
@@ -2995,32 +2868,6 @@ void loop() {
     if (announceManager) announceManager->loop();
     audio.loop();
 
-    // 6.1 Deferred voice-memo playback. The LXMF message callback writes
-    //     s_pendingVoicePath when a "C2 " or "C2P ..." message lands; we
-    //     decode + play here so codec2 + I2S never run inside a packet
-    //     callback (the codec2 worker already runs at 1 priority and uses
-    //     40KB of stack — stalling RNS receiver would drop subsequent
-    //     packets).
-    if (s_pendingVoicePath[0]) {
-        const char* c2Path = s_pendingVoicePath;
-        static const char kPlayWav[] = "/Files/voice/rx_play.wav";
-        Codec2Voice::Result d = Codec2Voice::decodeC2ToWav(c2Path, kPlayWav);
-        if (d.ok) {
-            bool played = audio.playWav(kPlayWav);
-            if (played) {
-                ui.lvStatusBar().showToast("Voice memo", 1200);
-                Serial.printf("[voice] play ok %s\n", c2Path);
-            } else {
-                Serial.printf("[voice] play fail %s\n", c2Path);
-                ui.lvStatusBar().showToast("Voice play fail", 1500);
-            }
-        } else {
-            Serial.printf("[voice] decode fail err=%s\n",
-                          d.err[0] ? d.err : "?");
-            ui.lvStatusBar().showToast("Voice decode fail", 1500);
-        }
-        s_pendingVoicePath[0] = '\0';
-    }
     telemetryManager.loop();
     // 6.5 Tile cache pump — one chunk per main-loop iteration. pngle's decode
     //     bursts are safe at any default radio preset (measured ~60-180ms max

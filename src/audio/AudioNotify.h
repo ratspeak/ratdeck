@@ -16,10 +16,9 @@ public:
     void loop();
 
     // WAV playback — Mono PCM16 from SD. Loudness-normalized via gated-RMS +
-    // soft-knee 4:1 (matches Codec2 decode at perceived level).
-    // Returns true on successful start; the path was readable and the I2S
-    // driver accepted the data stream. The actual play completes asynchronously
-    // (this call blocks until the last sample is written).
+    // soft-knee 4:1. Returns true on successful start; the path was readable
+    // and the I2S driver accepted the data stream. The actual play completes
+    // asynchronously (this call blocks until the last sample is written).
     bool playWav(const char* path);
 
     // True when a valid WAV header is present (size > 44 bytes).

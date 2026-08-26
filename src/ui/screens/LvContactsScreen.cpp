@@ -105,8 +105,8 @@ void LvContactsScreen::createUI(lv_obj_t* parent) {
     _lastContactCount = -1;
     rebuildList();
 
-    // Full contact action modal (Message / Send GPS / Send Voice / Edit Name /
-    // Remove / Close) — 6 entries.
+    // Full contact action modal (Message / Send GPS / Edit Name /
+    // Remove / Close) — 5 entries.
     constexpr int kOverlayW = 260;
     constexpr int kOverlayH = 241;
     _overlay = lv_obj_create(lv_layer_top());
@@ -141,7 +141,7 @@ void LvContactsScreen::createUI(lv_obj_t* parent) {
     lv_obj_set_pos(_overlayReach, 12, 43);
 
     const char* menuText[MAX_MENU_ENTRIES] = {
-        "Message", "Send GPS", "Send Voice", "Edit Name", "Remove", "Close"};
+        "Message", "Send GPS", "Edit Name", "Remove", "Close"};
     for (int i = 0; i < MAX_MENU_ENTRIES; i++) {
         lv_obj_t* btn = lv_obj_create(_overlay);
         lv_obj_set_size(btn, 236, 24);
@@ -399,10 +399,9 @@ void LvContactsScreen::showActionMenu(int listIdx) {
     if (!_overlay) return;
     lv_label_set_text(_menuLabels[0], "Message");
     lv_label_set_text(_menuLabels[1], "Send GPS");
-    lv_label_set_text(_menuLabels[2], "Send Voice");
-    lv_label_set_text(_menuLabels[3], "Edit Name");
-    lv_label_set_text(_menuLabels[4], "Remove");
-    lv_label_set_text(_menuLabels[5], "Close");
+    lv_label_set_text(_menuLabels[2], "Edit Name");
+    lv_label_set_text(_menuLabels[3], "Remove");
+    lv_label_set_text(_menuLabels[4], "Close");
     for (int i = 0; i < MAX_MENU_ENTRIES; i++) {
         lv_obj_clear_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
     }
@@ -514,7 +513,7 @@ bool LvContactsScreen::handleKey(const KeyEvent& event) {
         }
         if (event.enter || event.character == '\n' || event.character == '\r') {
             int nodeIdx = nodeIdxFromList(_actionListIdx);
-            // [0]=Message [1]=Send GPS [2]=Send Voice [3]=Edit Name [4]=Remove [5]=Close
+            // [0]=Message [1]=Send GPS [2]=Edit Name [3]=Remove [4]=Close
             switch (_menuIdx) {
                 case 0:
                     if (nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size() && _onSelect) {
@@ -536,19 +535,9 @@ bool LvContactsScreen::handleKey(const KeyEvent& event) {
                     }
                     break;
                 case 2:
-                    if (nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size() && _onSendVoice) {
-                        std::string hex = _am->nodes()[nodeIdx].hash.toHex();
-                        hideOverlay();
-                        _onSendVoice(hex);
-                    } else {
-                        hideOverlay();
-                        if (_ui) _ui->lvStatusBar().showToast("Send Voice unavailable", 1500);
-                    }
-                    break;
-                case 3:
                     showNicknameInput();
                     break;
-                case 4:
+                case 3:
                     if (nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size()) {
                         _am->deleteContact(nodeIdx);
                         if (_ui) _ui->lvStatusBar().showToast("Contact removed", 1200);

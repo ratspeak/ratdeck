@@ -9,13 +9,14 @@
 namespace {
 
 // =============================================================================
-// Layout — 320×194 content area (with tab bar visible). Six tiles fit
-// in a 2-col, 3-row grid.
+// Layout — 320×194 content area (with tab bar visible). Five tiles fit
+// in a 2-col, 3-row grid (last cell of row 3 left empty so the row sits
+// centered).
 //
 // Tightened from the prior numbers (kPad=6, kTitleH=22, kTileH=52, kGap=6)
 // so the last row (Encrypt) sits ~8 px above the tab bar. Theme's base
 // spacing unit is 4 px (Theme::SP_1=4), so kPad/kGap use that unit
-// directly for visual rhythm. With 6 tiles (3 rows) the tile height is
+// directly for visual rhythm. With 5 tiles (3 rows) the tile height is
 // dropped to 46 px to keep clearance under CONTENT_H=194.
 // =============================================================================
 constexpr lv_coord_t kPad         = 4;
@@ -41,7 +42,6 @@ constexpr TileSpec kSpecs[LvAppsScreen::TILE_COUNT] = {
     {"Notes",   false},   // live — see LvNotesListScreen / LvNotesEditScreen
     {"Files",   false},   // live — see LvFilesScreen / LvReaderScreen
     {"GPS",     false},   // live — see LvGpsScreen
-    {"Voice",   false},   // live — see LvVoiceScreen (decode/play only)
     {"Encrypt", true},
 };
 
@@ -132,9 +132,6 @@ void LvAppsScreen::createUI(lv_obj_t* parent) {
                                     else if (self->_ui) self->_ui->lvStatusBar().showToast("Coming soon", 1500);
                                     break;
                 case TILE_GPS:     if (self->_onOpenGps)     self->_onOpenGps();
-                                    else if (self->_ui) self->_ui->lvStatusBar().showToast("Coming soon", 1500);
-                                    break;
-                case TILE_VOICE:   if (self->_onOpenVoice)   self->_onOpenVoice();
                                     else if (self->_ui) self->_ui->lvStatusBar().showToast("Coming soon", 1500);
                                     break;
                 case TILE_ENCRYPT: if (self->_onOpenEncrypt) self->_onOpenEncrypt();
@@ -230,9 +227,6 @@ bool LvAppsScreen::handleKey(const KeyEvent& event) {
                                 else if (_ui) _ui->lvStatusBar().showToast("Coming soon", 1500);
                                 break;
             case TILE_GPS:     if (_onOpenGps) _onOpenGps();
-                                else if (_ui) _ui->lvStatusBar().showToast("Coming soon", 1500);
-                                break;
-            case TILE_VOICE:   if (_onOpenVoice) _onOpenVoice();
                                 else if (_ui) _ui->lvStatusBar().showToast("Coming soon", 1500);
                                 break;
             case TILE_ENCRYPT: if (_onOpenEncrypt) _onOpenEncrypt();

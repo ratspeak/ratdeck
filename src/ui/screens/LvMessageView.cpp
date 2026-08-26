@@ -5,7 +5,6 @@
 #include "reticulum/LXMFManager.h"
 #include "reticulum/AnnounceManager.h"
 #include "util/PerfTrace.h"
-#include "util/VoiceMemo.h"
 #include "config/UserConfig.h"
 #include "hal/GPSManager.h"
 #include <Arduino.h>
@@ -481,12 +480,7 @@ void LvMessageView::refreshUI() {
 void LvMessageView::appendMessage(const LXMFMessage& msg) {
     if (!_msgScroll) return;
 
-    // Voice memos hide their base64 payload and show a single-line label
-    // so the bubble stays readable. We compute the width from the
-    // placeholder rather than from the (potentially kilobyte-long) base64.
-    const bool isVoice = VoiceMemo::isVoiceMemo(msg.content);
-    const std::string& displayContent =
-        isVoice ? std::string(VoiceMemo::displayText()) : msg.content;
+    const std::string& displayContent = msg.content;
 
     const lv_font_t* font = &lv_font_rsdeck_12;
     int textW = textWidthForBubble(displayContent);
