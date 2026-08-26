@@ -65,10 +65,12 @@ void LXMFManager::loop() {
     int processed = 0;
 
     for (auto it = _outQueue.begin(); it != _outQueue.end(); ) {
-        // Time-budgeted: process up to 3 messages within 10ms
-        if (processed >= 3 || (processed > 0 && millis() - now >= 10)) break;
-
         LXMFMessage& msg = *it;
+
+        // Time-budgeted drain: process up to 3 messages within 10ms so a
+        // burst send doesn't starve the UI / packet RX. LoRa pacing is
+        // handled inside LoRaInterface (TX_QUEUE_MAX + reject-newest).
+        if (processed >= 3 || (processed > 0 && millis() - now >= 10)) break;
 
         // Keep unresolved peers from churning the UI loop or LoRa airtime.
         // The first attempt is immediate; later path/identity retries happen
@@ -139,8 +141,8 @@ bool LXMFManager::sendMessage(const RNS::Bytes& destHash, const std::string& con
     }
 
     _outQueue.push_back(msg);
-    // Immediately save with QUEUED status so it appears in getMessages() right away
-    // Save the queue copy so savedCounter propagates back to the queued message
+    // Persist immediately so getMessages() reflects outbound text right
+    // away (status flips QUEUED → SENT → DELIVERED on the stored row).
     if (_store) { _store->saveMessage(_outQueue.back()); }
 
     if (!RNS::Transport::has_path(destHash)) {
@@ -350,8 +352,9 @@ bool LXMFManager::attemptOutboundDelivery(LXMFMessage& msg) {
                 Serial.printf("[LXMF] Opportunistic pack failed (%s); trying link delivery\n", e.what());
             }
 
+            const size_t singleFrameCap = RSDECK_RNODE_SINGLE_FRAME_RAW_MAX;
             const bool singleFrameSafe = packetPacked && (!loraPath
-                || estimatedLoRaRawLen <= RSDECK_RNODE_SINGLE_FRAME_RAW_MAX);
+                || estimatedLoRaRawLen <= singleFrameCap);
 
             if (singleFrameSafe) {
                 Serial.printf("[LXMF] sending opportunistic: payload=%d raw=%u lora_raw=%u lora=%s hops=%u to %s\n",
@@ -368,10 +371,11 @@ bool LXMFManager::attemptOutboundDelivery(LXMFMessage& msg) {
             // Too large for single-frame LoRa, or too large for an opportunistic
             // Reticulum packet. Use link/resource delivery so packet loss is
             // recoverable above the physical RNode split-frame layer.
+            const size_t singleFrameCap = RSDECK_RNODE_SINGLE_FRAME_RAW_MAX;
             Serial.printf("[LXMF] Message needs link delivery: payload=%d raw=%u lora_raw=%u limit=%u lora=%s hops=%u retry=%d\n",
                           (int)payloadBytes.size(), (unsigned)rawLen,
                           (unsigned)estimatedLoRaRawLen,
-                          (unsigned)RSDECK_RNODE_SINGLE_FRAME_RAW_MAX,
+                          (unsigned)singleFrameCap,
                           loraPath ? "yes" : "no", (unsigned)hops, msg.retries);
             if (msg.retries % 3 == 0 && (!_outLink || _outLinkDestHash != msg.destHash
                 || _outLink.status() != RNS::Type::Link::ACTIVE)) {
@@ -418,6 +422,9 @@ void LXMFManager::onPacketReceived(const RNS::Bytes& data, const RNS::Packet& pa
 
 void LXMFManager::onOutLinkEstablished(RNS::Link& link) {
     if (!_instance) return;
+    // Accept inbound resources on this link too (peer may send a file
+    // or large message back via resource transfer).
+    link.set_resource_strategy(RNS::Type::Link::ACCEPT_ALL);
     _instance->_outLink = link;
     _instance->_outLinkDestHash = _instance->_outLinkPendingHash;
     _instance->_outLinkPending = false;
@@ -438,6 +445,11 @@ void LXMFManager::onLinkEstablished(RNS::Link& link) {
     if (!_instance) return;
     Serial.printf("[LXMF-DIAG] onLinkEstablished fired! link_id=%s status=%d\n",
         link.link_id().toHex().substr(0, 16).c_str(), (int)link.status());
+    // Default link resource_strategy is ACCEPT_NONE — payloads larger
+    // than the Link MDU arrive as RESOURCE_ADV and are silently dropped
+    // unless we accept them. ACCEPT_ALL is required so resource transfers
+    // for large files/text messages round-trip.
+    link.set_resource_strategy(RNS::Type::Link::ACCEPT_ALL);
     link.set_packet_callback([](const RNS::Bytes& data, const RNS::Packet& packet) {
         if (!_instance) return;
         Serial.printf("[LXMF-DIAG] Link packet received! %d bytes pkt_dest=%s\n",
@@ -493,8 +505,10 @@ void LXMFManager::processIncoming(const uint8_t* data, size_t len, const RNS::By
     }
     Serial.printf("[LXMF] Message from %s (%d bytes) content_len=%d\n",
                   msg.sourceHash.toHex().substr(0, 8).c_str(), (int)len, (int)msg.content.size());
-    if (_store) { _store->saveMessage(msg); }
+    // Fire the listener first so the UI (location extraction, notifications)
+    // sees the message before it lands in the store; then persist.
     if (_onMessage) { _onMessage(msg); }
+    if (_store) { _store->saveMessage(msg); }
 }
 
 const std::vector<std::string>& LXMFManager::conversations() const {

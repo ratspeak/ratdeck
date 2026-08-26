@@ -21,6 +21,12 @@ public:
     bool removeDir(const char* path);
     bool readFile(const char* path, uint8_t* buffer, size_t maxLen, size_t& bytesRead);
 
+    // Open a file for incremental (chunked) reading. Returns a default-constructed
+    // (invalid) File if SD is not ready or the path doesn't exist. Used by the
+    // tile-loader to stream a PNG without pulling the whole file into RAM.
+    File openFile(const char* path);
+    bool fileValid(const File& f) const { return (bool)f; }
+
     bool isReady() const { return _ready; }
     uint64_t totalBytes() const;
     uint64_t usedBytes() const;

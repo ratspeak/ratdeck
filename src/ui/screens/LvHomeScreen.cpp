@@ -371,14 +371,39 @@ void LvHomeScreen::refreshUI() {
 
 #if HAS_GPS
     bool gpsOn = _cfg && _cfg->settings().gpsTimeEnabled;
+    if (_gps && gpsOn) {
+        // Simple status: just "FIX (N sat)" / "FIX" / "NO FIX" — no
+        // running age timer (avoids the per-second jitter from
+        // GPSManager::fixAgeMs() resetting on every ~1Hz NMEA sentence).
+        bool hasFix = _gps->hasLocationFix();
+        int sats = _gps->satellites();
+        String status;
+        uint32_t color;
+        uint32_t border;
+        if (!hasFix) {
+            status = "NO FIX";
+            color = Theme::TEXT_MUTED;
+            border = Theme::BORDER;
+        } else {
+            status = (sats > 0) ? "FIX (" + String(sats) + " sat)" : "FIX";
+            color = Theme::SUCCESS;
+            border = Theme::SUCCESS;
+        }
+        lv_label_set_text(_lblLinks, status.c_str());
+        lv_obj_set_style_text_color(_lblLinks, lv_color_hex(color), 0);
+        setPanelTone(_statLinks, gpsOn ? Theme::PRIMARY_SUBTLE : Theme::BG_ELEVATED, border);
+    } else {
+        lv_label_set_text(_lblLinks, gpsOn ? "ON" : "OFF");
+        lv_obj_set_style_text_color(_lblLinks, lv_color_hex(
+            gpsOn ? Theme::SUCCESS : Theme::TEXT_MUTED), 0);
+        setPanelTone(_statLinks, gpsOn ? Theme::PRIMARY_SUBTLE : Theme::BG_ELEVATED,
+                      gpsOn ? Theme::PRIMARY : Theme::BORDER);
+    }
 #else
-    bool gpsOn = false;
+    lv_label_set_text(_lblLinks, "OFF");
+    lv_obj_set_style_text_color(_lblLinks, lv_color_hex(Theme::TEXT_MUTED), 0);
+    setPanelTone(_statLinks, Theme::BG_ELEVATED, Theme::BORDER);
 #endif
-    lv_label_set_text(_lblLinks, gpsOn ? "ON" : "OFF");
-    lv_obj_set_style_text_color(_lblLinks, lv_color_hex(
-        gpsOn ? Theme::SUCCESS : Theme::TEXT_MUTED), 0);
-    setPanelTone(_statLinks, gpsOn ? Theme::PRIMARY_SUBTLE : Theme::BG_ELEVATED,
-                 gpsOn ? Theme::PRIMARY : Theme::BORDER);
 
     if (!_rns) {
         lv_label_set_text(_lblSummary, "Identity unavailable");

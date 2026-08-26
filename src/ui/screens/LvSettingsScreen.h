@@ -17,6 +17,7 @@ class WiFiInterface;
 class TCPClientInterface;
 class ReticulumManager;
 class IdentityManager;
+class AnnounceManager;
 
 enum class SettingType : uint8_t {
     READONLY,
@@ -30,7 +31,8 @@ enum class SettingType : uint8_t {
 enum class SettingsView : uint8_t {
     CATEGORY_LIST,
     ITEM_LIST,
-    WIFI_PICKER
+    WIFI_PICKER,
+    PEER_PICKER
 };
 
 struct SettingItem {
@@ -74,6 +76,7 @@ public:
     void setTCPClients(std::vector<TCPClientInterface*>* tcp) { _tcp = tcp; }
     void setRNS(ReticulumManager* rns) { _rns = rns; }
     void setIdentityManager(IdentityManager* idm) { _idMgr = idm; }
+    void setAnnounceManager(AnnounceManager* am) { _am = am; }
     void setUIManager(UIManager* ui) { _ui = ui; }
     void setIdentityHash(const String& hash) { _identityHash = hash; }
     void setDestinationHash(const String& hash) { _destinationHash = hash; }
@@ -95,16 +98,20 @@ private:
     void showCategoryList();
     void showItemList(int catIdx);
     void showWifiPicker();
+    void showPeerPicker();
     void rebuildCategoryList();
     void rebuildItemList();
     void rebuildWifiList();
+    void rebuildPeerList();
     void selectWifiResult(int resultIdx);
+    void selectPeerResult(int listIdx);
 
     void enterCategory(int catIdx);
     void exitToCategories();
     void updateCategorySelection(int oldIdx, int newIdx);
     void updateItemSelection(int oldIdx, int newIdx);
     void updateWifiSelection(int oldIdx, int newIdx);
+    void updatePeerSelection(int oldIdx, int newIdx);
     bool settingNeedsReboot(const SettingItem& item) const;
     bool categoryNeedsReboot(int catIdx) const;
     bool confirmableAction(const SettingItem& item) const;
@@ -131,6 +138,7 @@ private:
     std::vector<TCPClientInterface*>* _tcp = nullptr;
     ReticulumManager* _rns = nullptr;
     IdentityManager* _idMgr = nullptr;
+    AnnounceManager* _am = nullptr;
     UIManager* _ui = nullptr;
     String _identityHash;
     String _destinationHash;
@@ -184,6 +192,17 @@ private:
     int _wifiPickerIdx = 0;
     size_t _wifiTargetSlot = 0;
     bool _wifiScanActive = false;
+
+    // Peer picker (seen-announce picker for telemetry hub)
+    std::vector<int> _peerPickerIndices;  // indices into _am->nodes()
+    int _peerPickerIdx = 0;
+    static constexpr int PEER_PICKER_CAP = 50;
+    // Throttled live-value refresh (Voltage / Estimated Charge readonly
+    // rows) while sitting on the item list - without this, those labels
+    // only update on navigation/edit events and can show a stale snapshot
+    // (e.g. a transient boot-time reading) indefinitely if the user just
+    // stays on the screen watching it.
+    unsigned long _lastReadonlyRefresh = 0;
 
     // Reboot-required tracking
     bool _rebootNeeded = false;

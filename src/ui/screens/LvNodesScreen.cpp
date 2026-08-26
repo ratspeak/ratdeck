@@ -113,11 +113,16 @@ void LvNodesScreen::createUI(lv_obj_t* parent) {
     rebuildList();
 
     // --- Action modal overlay (on top layer, centered) ---
+    // Sized for up to 5 menu rows (saved: Message/GPS/Edit/Remove/Close).
+    // Unsaved peers hide unused rows at showActionMenu time.
+    constexpr int kOverlayW = 260;
+    constexpr int kOverlayH = 214;     // header ~60 + 5*27
     _overlay = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(_overlay, 260, 158);
-    lv_obj_set_pos(_overlay, (Theme::SCREEN_W - 260) / 2, Theme::STATUS_BAR_H + (Theme::CONTENT_H - 158) / 2);
+    lv_obj_set_size(_overlay, kOverlayW, kOverlayH);
+    lv_obj_set_pos(_overlay, (Theme::SCREEN_W - kOverlayW) / 2, Theme::STATUS_BAR_H + (Theme::CONTENT_H - kOverlayH) / 2);
     lv_obj_add_style(_overlay, LvTheme::styleModal(), 0);
     lv_obj_set_style_pad_all(_overlay, 0, 0);
+    lv_obj_set_style_bg_opa(_overlay, LV_OPA_COVER, 0);  // no bleed-through
     lv_obj_clear_flag(_overlay, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(_overlay, LV_OBJ_FLAG_HIDDEN);
 
@@ -142,8 +147,13 @@ void LvNodesScreen::createUI(lv_obj_t* parent) {
     lv_obj_set_width(_overlayReach, 236);
     lv_obj_set_pos(_overlayReach, 12, 43);
 
-    const char* menuText[] = {"Save Contact", "Message", "Close"};
-    for (int i = 0; i < 3; i++) {
+    // Menu rows — up to MAX_MENU_ENTRIES. showActionMenu() sets the
+    // labels + visibility per peer (saved vs unsaved). Default labels
+    // here are placeholders; they get overwritten before showActionMenu
+    // ever clears the overlay hidden flag.
+    const char* menuText[MAX_MENU_ENTRIES] = {
+        "Save Contact", "Message", "Close", "", ""};
+    for (int i = 0; i < MAX_MENU_ENTRIES; i++) {
         lv_obj_t* btn = lv_obj_create(_overlay);
         lv_obj_set_size(btn, 236, 24);
         lv_obj_set_pos(btn, 12, 63 + i * 27);
@@ -207,7 +217,7 @@ void LvNodesScreen::createUI(lv_obj_t* parent) {
 
 void LvNodesScreen::destroyUI() {
     if (_overlay) { lv_obj_del(_overlay); _overlay = nullptr; }
-    for (int i = 0; i < 3; i++) { _menuBtns[i] = nullptr; _menuLabels[i] = nullptr; }
+    for (int i = 0; i < MAX_MENU_ENTRIES; i++) { _menuBtns[i] = nullptr; _menuLabels[i] = nullptr; }
     _overlayTitle = nullptr; _overlayMeta = nullptr; _overlayReach = nullptr;
     _nicknameBox = nullptr; _nicknameLbl = nullptr; _nicknameHint = nullptr;
     _list = nullptr; _emptyState = nullptr;
@@ -424,18 +434,44 @@ void LvNodesScreen::showActionMenu(int nodeIdx) {
     _actionState = NodeAction::ACTION_MENU;
     _nicknameText = "";
     if (_overlay) {
-        if (_am && nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size()) {
-            bool isSaved = _am->nodes()[nodeIdx].saved;
-            lv_label_set_text(_menuLabels[0], isSaved ? "Edit Name" : "Save Contact");
+        // Peers = discovery only (match Pro):
+        //   Unsaved: [Save Contact] [Message] [Close]
+        //   Saved:   [Message] [Close]   (full actions live on Contacts tab)
+        bool isSaved = _am && nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size()
+                       && _am->nodes()[nodeIdx].saved;
+        if (isSaved) {
+            lv_label_set_text(_menuLabels[0], "Message");
+            lv_label_set_text(_menuLabels[1], "Close");
+            for (int i = 0; i < 2; i++) {
+                lv_obj_clear_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            for (int i = 2; i < MAX_MENU_ENTRIES; i++) {
+                lv_obj_add_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        } else {
+            lv_label_set_text(_menuLabels[0], "Save Contact");
             lv_label_set_text(_menuLabels[1], "Message");
             lv_label_set_text(_menuLabels[2], "Close");
+            for (int i = 0; i < 3; i++) {
+                lv_obj_clear_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            for (int i = 3; i < MAX_MENU_ENTRIES; i++) {
+                lv_obj_add_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
+            }
         }
         updateOverlayDetails(nullptr);
-        for (int i = 0; i < 3; i++) lv_obj_clear_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(_nicknameBox, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(_overlay, LV_OBJ_FLAG_HIDDEN);
         updateMenuSelection();
     }
+}
+
+int LvNodesScreen::menuEntryCount() const {
+    if (_am && _actionNodeIdx >= 0 && _actionNodeIdx < (int)_am->nodes().size()
+        && _am->nodes()[_actionNodeIdx].saved) {
+        return 2;   // Message / Close
+    }
+    return 3;       // Save Contact / Message / Close
 }
 
 void LvNodesScreen::hideOverlay() {
@@ -451,14 +487,17 @@ void LvNodesScreen::showNicknameInput() {
         _nicknameText = String(_am->nodes()[_actionNodeIdx].name.c_str());
     }
     updateOverlayDetails("Set contact name");
-    for (int i = 0; i < 3; i++) lv_obj_add_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < MAX_MENU_ENTRIES; i++) lv_obj_add_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(_nicknameBox, LV_OBJ_FLAG_HIDDEN);
     updateNicknameDisplay();
 }
 
 void LvNodesScreen::updateMenuSelection() {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < MAX_MENU_ENTRIES; i++) {
         bool sel = (i == _menuIdx);
+        // Style every row including hidden ones — cheap, and keeps the
+        // loop uniform. Hidden rows aren't drawn so the unsel colors
+        // are invisible to the user.
         lv_obj_set_style_text_color(_menuLabels[i], lv_color_hex(
             sel ? Theme::ACCENT : Theme::TEXT_SECONDARY), 0);
         lv_obj_set_style_bg_color(_menuBtns[i], lv_color_hex(
@@ -495,6 +534,19 @@ bool LvNodesScreen::handleLongPress() {
 
 bool LvNodesScreen::handleKey(const KeyEvent& event) {
     if (!_am) return false;
+
+    // --- Back navigation (app-mode only) ---
+    // Only active when no modal overlay is consuming keys. When the
+    // caller wired a back-callback (Peers opened as an Apps tile), Esc
+    // / back hands control back so the caller can restore the tab bar
+    // and return to the Apps hub. If no callback is wired, leave the
+    // key for the global tab-cycle / tab-bar to handle.
+    if (_actionState == NodeAction::BROWSE && !_confirmDelete && _onBack) {
+        if (event.character == 0x1B || event.del || event.character == 0x08) {
+            _onBack();
+            return true;
+        }
+    }
 
     // --- Focus activation guard (only in browse mode) ---
     if (_actionState == NodeAction::BROWSE && !_confirmDelete &&
@@ -543,29 +595,50 @@ bool LvNodesScreen::handleKey(const KeyEvent& event) {
 
     // --- Action menu mode ---
     if (_actionState == NodeAction::ACTION_MENU) {
+        int maxIdx = menuEntryCount() - 1;
         if (event.up) {
             if (_menuIdx > 0) { _menuIdx--; updateMenuSelection(); }
             return true;
         }
         if (event.down) {
-            if (_menuIdx < 2) { _menuIdx++; updateMenuSelection(); }
+            if (_menuIdx < maxIdx) { _menuIdx++; updateMenuSelection(); }
             return true;
         }
         if (event.enter || event.character == '\n' || event.character == '\r') {
-            switch (_menuIdx) {
-                case 0:
-                    showNicknameInput();
-                    break;
-                case 1:
-                    if (_actionNodeIdx >= 0 && _actionNodeIdx < (int)_am->nodes().size() && _onSelect) {
-                        std::string hex = _am->nodes()[_actionNodeIdx].hash.toHex();
+            bool isSaved = _am && _actionNodeIdx >= 0 && _actionNodeIdx < (int)_am->nodes().size()
+                           && _am->nodes()[_actionNodeIdx].saved;
+            // Peers discovery menu only:
+            //   Saved:   [0]=Message [1]=Close
+            //   Unsaved: [0]=Save Contact [1]=Message [2]=Close
+            enum class Act { KMessage, KSaveContact, KClose };
+            Act act;
+            int targetIdx = _actionNodeIdx;
+            if (isSaved) {
+                act = (_menuIdx == 0) ? Act::KMessage : Act::KClose;
+            } else {
+                switch (_menuIdx) {
+                    case 0: act = Act::KSaveContact; break;
+                    case 1: act = Act::KMessage; break;
+                    default: act = Act::KClose; break;
+                }
+            }
+
+            switch (act) {
+                case Act::KMessage:
+                    if (targetIdx >= 0 && targetIdx < (int)_am->nodes().size() && _onSelect) {
+                        std::string hex = _am->nodes()[targetIdx].hash.toHex();
                         hideOverlay();
                         _onSelect(hex);
                     } else {
                         hideOverlay();
                     }
                     break;
-                case 2:
+                case Act::KSaveContact:
+                    // Save with optional name prompt (same path as before).
+                    showNicknameInput();
+                    break;
+                case Act::KClose:
+                default:
                     hideOverlay();
                     break;
             }

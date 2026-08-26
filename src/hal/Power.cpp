@@ -52,11 +52,39 @@ void Power::begin() {
     Serial.println("[POWER] Power manager initialized");
 }
 
+namespace {
+// Oversample the raw ADC to smooth out transient noise/sag - a single
+// analogRead() can catch a momentary dip (e.g. inrush current right at
+// boot while the display/radio power up) that doesn't reflect the
+// battery's actual resting voltage. 8 samples with a short settling delay
+// between each is cheap (<1ms total) and removes most single-sample spikes
+// without meaningfully slowing down callers.
+constexpr int BATTERY_ADC_SAMPLES = 8;
+
+int readBatteryRawAveraged() {
+    long sum = 0;
+    for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
+        sum += analogRead(BAT_ADC_PIN);
+        if (i < BATTERY_ADC_SAMPLES - 1) delayMicroseconds(100);
+    }
+    return (int)(sum / BATTERY_ADC_SAMPLES);
+}
+}  // namespace
+
 float Power::batteryVoltage() const {
     // T-Deck Plus: voltage divider on GPIO 4
-    int raw = analogRead(BAT_ADC_PIN);
-    // Voltage divider: 2x ratio, 3.3V reference, 12-bit ADC
-    return (raw / 4095.0f) * 3.3f * 2.0f;
+    int raw = readBatteryRawAveraged();
+    // Voltage divider ratio, 3.3V reference, 12-bit ADC. Stock hardware is
+    // ~2.0x; aftermarket/extended battery packs can be wired through a
+    // different sense-line divider network, so this is user-calibratable
+    // via setAdcDividerRatio() rather than hardcoded. Calibrate with a
+    // multimeter on the actual battery terminals:
+    //   correct_ratio = measured_mv / raw_mv_at_current_ratio * current_ratio
+    return (raw / 4095.0f) * 3.3f * _adcDividerRatio;
+}
+
+int Power::batteryRawAdc() const {
+    return readBatteryRawAveraged();
 }
 
 int Power::batteryPercent() const {
@@ -76,14 +104,20 @@ int Power::batteryPercent() const {
 
     if (_batteryModel == 1) {
         // Linear: distribution across 3.0–4.2V.
-        return (int)((v - 3.0f) / 1.2f * 100.0f);
+        return constrain((int)((v - 3.0f) / 1.2f * 100.0f), 0, 100);
     }
 
-    // LiPo: interpolate between nearest table entries.
+    // LiPo: interpolate between nearest table entries. The table's top
+    // entry (3.90V=100%) is well below the LiPo absolute max (~4.2V), so
+    // any v above 3.90V - not otherwise caught by isCharging() - would
+    // extrapolate past the top entry pair without a clamp (e.g. 119% at
+    // 4.09V observed on real hardware after raising the charge-detection
+    // threshold). Clamp every return path to a valid 0-100 percent.
     for (int i = 0; i < LIPO_CURVE_N - 1; i++) {
         if (v >= LIPO_CURVE[i + 1].v) {
             float t = (v - LIPO_CURVE[i + 1].v) / (LIPO_CURVE[i].v - LIPO_CURVE[i + 1].v);
-            return (int)(LIPO_CURVE[i + 1].pct + t * (LIPO_CURVE[i].pct - LIPO_CURVE[i + 1].pct));
+            int pct = (int)(LIPO_CURVE[i + 1].pct + t * (LIPO_CURVE[i].pct - LIPO_CURVE[i + 1].pct));
+            return constrain(pct, 0, 100);
         }
     }
     return 0;
@@ -103,6 +137,10 @@ void Power::setChargeThreshold(float v)   {
 
 void Power::setFullBatteryVoltage(float v) {
     _fullBatteryV = v;
+}
+
+void Power::setAdcDividerRatio(float ratio) {
+    _adcDividerRatio = ratio;
 }
 
 

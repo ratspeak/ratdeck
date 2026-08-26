@@ -98,6 +98,42 @@ AP mode exposes a local TCP endpoint for a nearby Reticulum host:
 The bridging UI and interface behavior may change as Ratspeak's client release
 stabilizes.
 
+## Battery
+
+The stock T-Deck Plus battery is read through a fixed ADC voltage-divider
+ratio. Third-party/extended battery packs are commonly wired through a
+different divider network on their sense line, which can make the reported
+voltage (and therefore percentage) wrong even though the battery itself is
+fine — e.g. reading ~69% when actually fully charged.
+
+Tested and confirmed working with a
+[makernova.io](https://makernova.io/) 8000mAh pack (JST 1.25 connector) in
+[AlleyCat's extended T-Deck Plus case](https://www.printables.com/model/1345336)
+(3D-printed, Printables #1345336).
+
+If your battery percentage looks wrong, calibrate the ADC divider ratio
+against a multimeter reading on the battery terminals (ideally with USB
+disconnected, to avoid charge-line voltage bias):
+
+```
+b            # print raw ADC, computed voltage, divider ratio, percent
+B<ratio>     # set + persist a new divider ratio, e.g. B1.8762
+```
+
+over the device's serial console (115200 baud). The firmware computes the
+correct ratio for you from a live raw ADC reading + your multimeter value —
+see the in-firmware `b` output for the exact formula. Settings persist across
+reboots and firmware updates (stored alongside your identity/config, not
+touched by a normal OTA/reflash).
+
+The `Charge Above` and `Full Threshold` settings (Settings → Battery, hold
+trackball click to reveal developer controls) are separate knobs:
+`Charge Above` is the voltage above which the device assumes it's actively on
+a charger (typically just under the LiPo absolute max of ~4.2V, not the
+resting-full voltage); `Full Threshold` compensates the discharge curve for
+your particular pack's typical resting-voltage sag under load. They're not
+meant to be compared to each other directly.
+
 ## Build From Source
 
 ```bash

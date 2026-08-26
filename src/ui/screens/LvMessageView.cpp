@@ -5,6 +5,8 @@
 #include "reticulum/LXMFManager.h"
 #include "reticulum/AnnounceManager.h"
 #include "util/PerfTrace.h"
+#include "config/UserConfig.h"
+#include "hal/GPSManager.h"
 #include <Arduino.h>
 #include <time.h>
 #include <cmath>
@@ -15,6 +17,7 @@ namespace {
 constexpr int kHeaderH = 36;
 constexpr int kInputH = 31;
 constexpr int kComposerButtonW = 44;
+constexpr int kGpsButtonW = 36;
 constexpr int kBubbleMaxW = Theme::CONTENT_W * 3 / 4;
 constexpr unsigned long kFreshNodeMs = 10UL * 60UL * 1000UL;
 constexpr const char* kComposerPlaceholder = "Message...";
@@ -134,6 +137,21 @@ void LvMessageView::updateComposerState() {
     if (_textarea) {
         lv_obj_set_style_border_color(_textarea, lv_color_hex(hasText ? Theme::PRIMARY_MUTED : Theme::BORDER), 0);
     }
+    // GPS pill visual state mirrors Send GPS availability. When available
+    // it reads as a primary-tinted button (encouraging a tap); when not,
+    // it dims to BG_ELEVATED so the user can still see the affordance but
+    // understands it's gated. The click handler still toasts the reason
+    // (handled inside sendGpsLocation → canSendGps guard).
+    if (_btnGps) {
+        bool gpsOk = canSendGps();
+        lv_obj_set_style_border_color(_btnGps, lv_color_hex(gpsOk ? Theme::PRIMARY : Theme::BORDER), 0);
+        lv_obj_set_style_bg_color(_btnGps, lv_color_hex(gpsOk ? Theme::PRIMARY_SUBTLE : Theme::BG_ELEVATED), 0);
+        lv_obj_t* gpsLbl = lv_obj_get_child(_btnGps, 0);
+        if (gpsLbl) {
+            lv_obj_set_style_text_color(gpsLbl,
+                lv_color_hex(gpsOk ? Theme::PRIMARY : Theme::TEXT_MUTED), 0);
+        }
+    }
     refreshComposerPlaceholder();
 }
 
@@ -246,7 +264,12 @@ void LvMessageView::createUI(lv_obj_t* parent) {
     lv_obj_clear_flag(_inputRow, LV_OBJ_FLAG_SCROLLABLE);
 
     _textarea = lv_textarea_create(_inputRow);
-    lv_obj_set_size(_textarea, Theme::CONTENT_W - kComposerButtonW - 12, 23);
+    // Composer width must leave room for both the GPS pill and the SEND
+    // button plus a few px of gap on each side. Pre-GPS-pill this was
+    // CONTENT_W - kComposerButtonW - 12; now subtract kGpsButtonW too so
+    // both buttons fit cleanly on the 320-px wide content area without
+    // overlapping the placeholder.
+    lv_obj_set_size(_textarea, Theme::CONTENT_W - kComposerButtonW - kGpsButtonW - 14, 23);
     lv_obj_align(_textarea, LV_ALIGN_LEFT_MID, 0, 0);
     lv_textarea_set_one_line(_textarea, true);
     lv_textarea_set_max_length(_textarea, MAX_COMPOSER_CHARS + 1);
@@ -265,6 +288,25 @@ void LvMessageView::createUI(lv_obj_t* parent) {
             self->refreshComposerPlaceholder();
         }
     }, LV_EVENT_ALL, this);
+
+    // ---- GPS pill (Send GPS shortcut) ----
+    // Sized slightly narrower than SEND so the two side-by-side buttons
+    // read as a primary (SEND) + secondary (GPS) pair. Sits immediately
+    // left of SEND; vertically centered in the input row.
+    _btnGps = lv_btn_create(_inputRow);
+    lv_obj_set_size(_btnGps, kGpsButtonW, 23);
+    lv_obj_align(_btnGps, LV_ALIGN_RIGHT_MID, -(int32_t)kComposerButtonW - 2, 0);
+    lv_obj_add_style(_btnGps, LvTheme::styleBtn(), 0);
+    lv_obj_set_style_pad_all(_btnGps, 0, 0);
+    lv_obj_t* gpsLbl = lv_label_create(_btnGps);
+    lv_obj_set_style_text_font(gpsLbl, &lv_font_rsdeck_10, 0);
+    lv_obj_set_style_text_color(gpsLbl, lv_color_hex(Theme::PRIMARY), 0);
+    lv_label_set_text(gpsLbl, "GPS");
+    lv_obj_center(gpsLbl);
+    lv_obj_add_event_cb(_btnGps, [](lv_event_t* e) {
+        auto* self = (LvMessageView*)lv_event_get_user_data(e);
+        self->sendGpsLocation();
+    }, LV_EVENT_CLICKED, this);
 
     _btnSend = lv_btn_create(_inputRow);
     lv_obj_set_size(_btnSend, kComposerButtonW, 23);
@@ -303,11 +345,12 @@ void LvMessageView::destroyUI() {
     _msgScroll = nullptr;
     _inputRow = nullptr;
     _textarea = nullptr;
+    _btnGps = nullptr;
     _btnSend = nullptr;
     _statusLabels.clear();
     _textLabels.clear();
     _bubbleBoxes.clear();
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < MAX_SEND_MENU_ENTRIES; i++) {
         _sendRows[i] = nullptr;
         _sendLabels[i] = nullptr;
     }
@@ -385,6 +428,13 @@ void LvMessageView::refreshUI() {
     if (!_lxmf) return;
     unsigned long now = millis();
     markVisibleConversationRead();
+    // Refresh the GPS pill's "available / dimmed" state on every tick —
+    // GPS fix acquisition and gpsLocationEnabled can flip at any moment
+    // while the chat is open, and the user shouldn't have to leave + re-
+    // enter the screen to see the pill come alive. updateComposerState
+    // is cheap (4 lv_obj_set_style_* calls + one lv_obj_get_child), so
+    // doing it every tick (~250 ms cadence at LVGL) is fine.
+    updateComposerState();
     if (now - _lastRefreshMs < REFRESH_INTERVAL_MS) return;
     _lastRefreshMs = now;
     updateHeader();
@@ -430,8 +480,10 @@ void LvMessageView::refreshUI() {
 void LvMessageView::appendMessage(const LXMFMessage& msg) {
     if (!_msgScroll) return;
 
+    const std::string& displayContent = msg.content;
+
     const lv_font_t* font = &lv_font_rsdeck_12;
-    int textW = textWidthForBubble(msg.content);
+    int textW = textWidthForBubble(displayContent);
     if (!msg.incoming && textW < 96) textW = 96;
     int boxW = textW + 16;
 
@@ -488,7 +540,7 @@ void LvMessageView::appendMessage(const LXMFMessage& msg) {
     lv_obj_set_style_text_color(lbl, lv_color_hex(textColor), 0);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(lbl, textW);
-    lv_label_set_text(lbl, msg.content.c_str());
+    lv_label_set_text(lbl, displayContent.c_str());
 
     char timeBuf[8] = {0};
     bool hasTime = formatClock(msg.timestamp, timeBuf, sizeof(timeBuf));
@@ -741,13 +793,17 @@ bool LvMessageView::handleKey(const KeyEvent& event) {
             hideSendModeMenu();
             return true;
         }
+        // Wrap-around by current menu size so the hidden-when-unavail
+        // row (Send GPS) doesn't appear selectable when GPS isn't
+        // available.
+        int n = sendMenuEntryCount();
         if (event.up || event.left) {
-            _sendMenuIdx = (_sendMenuIdx + 2) % 3;
+            _sendMenuIdx = (_sendMenuIdx + n - 1) % n;
             updateSendModeMenu();
             return true;
         }
         if (event.down || event.right || event.tab) {
-            _sendMenuIdx = (_sendMenuIdx + 1) % 3;
+            _sendMenuIdx = (_sendMenuIdx + 1) % n;
             updateSendModeMenu();
             return true;
         }
@@ -826,8 +882,12 @@ void LvMessageView::showSendModeMenu() {
     hideSendModeMenu();
     _sendMenuIdx = 0;
 
+    int n = sendMenuEntryCount();
+    // Overlay grows with the row count so 4 rows fit cleanly. The
+    // base (3 rows = 118) plus one more row at the same spacing.
+    int overlayH = 118 + (n - 3) * 22;
     _sendOverlay = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(_sendOverlay, 244, 118);
+    lv_obj_set_size(_sendOverlay, 244, overlayH);
     lv_obj_center(_sendOverlay);
     lv_obj_add_style(_sendOverlay, LvTheme::styleModal(), 0);
     lv_obj_set_style_pad_all(_sendOverlay, 8, 0);
@@ -839,11 +899,21 @@ void LvMessageView::showSendModeMenu() {
     lv_label_set_text(title, "Send mode");
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
 
-    static const char* labels[3] = {"Send normally", "Send as link", "Cancel"};
-    for (int i = 0; i < 3; i++) {
+    // Order (3-row menu):
+    //   [0] Send normally  [1] Send as link  [2] Cancel
+    // With Send GPS available (saved contact + GPS fix):
+    //   [0] Send normally  [1] Send as link  [2] Send GPS  [3] Cancel
+    // The Send GPS row formats current lat/lon as "LOC lat lon" and
+    // fires sendCurrentMessage() with viaLink=false; the body comes
+    // from sendGpsLocation() via chooseSendMode(idx=2).
+    static const char* labels3[3] = {"Send normally", "Send as link", "Cancel"};
+    static const char* labels4[4] = {"Send normally", "Send as link", "Send GPS", "Cancel"};
+    const char** labels = (n == 4) ? labels4 : labels3;
+    for (int i = 0; i < MAX_SEND_MENU_ENTRIES; i++) {
+        bool visible = (i < n);
         lv_obj_t* row = lv_obj_create(_sendOverlay);
-        lv_obj_set_size(row, 220, 24);
-        lv_obj_set_pos(row, 12, 24 + i * 28);
+        lv_obj_set_size(row, 220, 20);
+        lv_obj_set_pos(row, 12, 24 + i * 22);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(row, 1, 0);
         lv_obj_set_style_radius(row, 4, 0);
@@ -851,6 +921,8 @@ void LvMessageView::showSendModeMenu() {
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_user_data(row, (void*)(intptr_t)i);
+        if (visible) lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_event_cb(row, [](lv_event_t* e) {
             auto* self = (LvMessageView*)lv_event_get_user_data(e);
             int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
@@ -859,7 +931,7 @@ void LvMessageView::showSendModeMenu() {
 
         _sendLabels[i] = lv_label_create(row);
         lv_obj_set_style_text_font(_sendLabels[i], &lv_font_rsdeck_12, 0);
-        lv_label_set_text(_sendLabels[i], labels[i]);
+        lv_label_set_text(_sendLabels[i], visible ? labels[i] : "");
         lv_obj_center(_sendLabels[i]);
         _sendRows[i] = row;
     }
@@ -872,14 +944,14 @@ void LvMessageView::hideSendModeMenu() {
         lv_obj_del_async(_sendOverlay);
         _sendOverlay = nullptr;
     }
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < MAX_SEND_MENU_ENTRIES; i++) {
         _sendRows[i] = nullptr;
         _sendLabels[i] = nullptr;
     }
 }
 
 void LvMessageView::updateSendModeMenu() {
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < MAX_SEND_MENU_ENTRIES; i++) {
         if (!_sendRows[i] || !_sendLabels[i]) continue;
         bool selected = i == _sendMenuIdx;
         lv_obj_set_style_bg_color(_sendRows[i],
@@ -891,12 +963,74 @@ void LvMessageView::updateSendModeMenu() {
     }
 }
 
+bool LvMessageView::canSendGps() const {
+    // Send GPS only when ALL of:
+    //   - GPS manager is wired + has a fresh fix
+    //   - gpsLocationEnabled is on (privacy gate)
+    //   - peer is a saved contact (don't broadcast GPS to strangers)
+    if (!_gps || !_gps->hasLocationFix()) return false;
+    if (_cfg && !_cfg->settings().gpsLocationEnabled) return false;
+    if (_am) {
+        const DiscoveredNode* node = _am->findNodeByHex(_peerHex);
+        if (!node || !node->saved) return false;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 void LvMessageView::chooseSendMode(int idx) {
-    bool viaLink = idx == 1;
-    if (idx == 2) {
+    int n = sendMenuEntryCount();
+    if (idx < 0 || idx >= n) {
         hideSendModeMenu();
         return;
     }
+    // Index map depends on whether Send GPS is in the menu:
+    //   3-row: 0=normal, 1=link, 2=cancel
+    //   4-row: 0=normal, 1=link, 2=send GPS, 3=cancel
+    if (n == 4 && idx == 2) {
+        hideSendModeMenu();
+        sendGpsLocation();
+        return;
+    }
+    if (idx == n - 1) {
+        hideSendModeMenu();
+        return;
+    }
+    bool viaLink = (idx == 1);
     hideSendModeMenu();
     sendCurrentMessage(viaLink);
+}
+
+void LvMessageView::sendGpsLocation() {
+    if (!_lxmf || _peerHex.empty()) return;
+    if (!canSendGps()) {
+        // Should be impossible from the menu path (the Send GPS row is
+        // only added when canSendGps() is true), but defend against
+        // direct programmatic calls.
+        if (_ui) _ui->lvStatusBar().showToast("No GPS fix", 1200);
+        return;
+    }
+    // Format as "LOC lat lon" — matches LocationParse::tryParse() on the
+    // receiving side. Never log this string anywhere; it carries the
+    // user's coordinates in plaintext.
+    char body[64];
+    snprintf(body, sizeof(body), "LOC %.5f %.5f",
+             _gps->latitude(), _gps->longitude());
+
+    RNS::Bytes destHash;
+    destHash.assignHex(_peerHex.c_str());
+
+    if (!_lxmf->sendMessage(destHash, body)) {
+        if (_ui) _ui->lvStatusBar().showToast("GPS send failed", 1500);
+        return;
+    }
+    if (_ui) _ui->lvStatusBar().showToast("GPS sent", 1200);
+    // Mirror the regular send path: clear composer state, force a
+    // fresh message reload so the user sees the outgoing bubble with
+    // queued/sending status. _inputText was empty when the long-press
+    // triggered the menu, so nothing to clear here.
+    _cachedMsgs.clear();
+    _knownTotalCount = -1;
+    rebuildMessages();
 }

@@ -8,12 +8,12 @@ public:
         TAB_HOME = 0,
         TAB_MSGS = 1,
         TAB_CONTACTS = 2,
-        TAB_NODES = 3,
-        TAB_SETTINGS = 4,
+        TAB_PEERS = 3,
+        TAB_APPS = 4,
+        TAB_SETTINGS = 5,
         TAB_CHATS = TAB_MSGS,
-        TAB_PEERS = TAB_NODES,
         TAB_SETUP = TAB_SETTINGS,
-        TAB_COUNT = 5
+        TAB_COUNT = 6
     };
 
     void create(lv_obj_t* parent);
@@ -44,5 +44,8 @@ private:
     int _unread[TAB_COUNT] = {};
     TabCallback _tabCb = nullptr;
 
-    static constexpr const char* TAB_NAMES[TAB_COUNT] = {"Home", "Chats", "Contacts", "Peers", "Settings"};
+    // Tab order matches Pro for cross-device parity:
+    // Home | Chats | Contacts | Peers | Apps | Settings.
+    // Map is no longer a primary tab — it lives inside the Apps hub.
+    static constexpr const char* TAB_NAMES[TAB_COUNT] = {"Home", "Chats", "Contacts", "Peers", "Apps", "Settings"};
 };

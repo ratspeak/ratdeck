@@ -56,6 +56,14 @@ public:
     // LVGL content area parent (between status bar and tab bar)
     lv_obj_t* contentParent() { return _lvContent; }
 
+    // Tab bar visibility — used when opening a screen "as an app" from
+    // the Apps tab (e.g. Peers) so the tab bar doesn't compete for the
+    // tiny 320x240 surface. Status bar stays visible (radio/time/peer
+    // count remain reachable). Defaults to visible. The flag is honored
+    // by setScreen() so navigating to another tab restores it.
+    void setTabBarVisible(bool visible);
+    bool tabBarVisible() const { return _tabBarVisible; }
+
 private:
     // LVGL components
     LvStatusBar _lvStatusBar;
@@ -64,4 +72,11 @@ private:
     lv_obj_t* _lvContent = nullptr;
 
     bool _bootMode = false;
+    bool _tabBarVisible = true;
+
+    // Apply the current tab-bar visibility flag to the LVGL shell, also
+    // resizing the content area to fill the freed row. Split out of
+    // setScreen/setBootMode so each path can call it at the right moment
+    // without duplicating the resize math.
+    void applyTabBarVisibility();
 };

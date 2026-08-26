@@ -39,7 +39,9 @@ void LvTabBar::create(lv_obj_t* parent) {
 
     for (int i = 0; i < TAB_COUNT; i++) {
         _cells[i] = lv_obj_create(_bar);
-        lv_obj_set_size(_cells[i], Theme::TAB_W, Theme::TAB_BAR_H);
+        bool isIconTab = (i == TAB_HOME || i == TAB_SETTINGS);
+        int cellW = isIconTab ? Theme::ICON_TAB_W : Theme::TEXT_TAB_W;
+        lv_obj_set_size(_cells[i], cellW, Theme::TAB_BAR_H);
         lv_obj_add_style(_cells[i], LvTheme::styleTabCell(), 0);
         lv_obj_add_style(_cells[i], LvTheme::styleTabCellActive(), LV_STATE_CHECKED);
         lv_obj_clear_flag(_cells[i], LV_OBJ_FLAG_SCROLLABLE);
@@ -47,11 +49,17 @@ void LvTabBar::create(lv_obj_t* parent) {
         lv_obj_add_event_cb(_cells[i], tab_click_cb, LV_EVENT_CLICKED, this);
 
         _labels[i] = lv_label_create(_cells[i]);
-        lv_obj_set_size(_labels[i], Theme::TAB_W - 4, 14);
+        lv_obj_set_size(_labels[i], cellW - 4, 14);
         lv_label_set_long_mode(_labels[i], LV_LABEL_LONG_CLIP);
-        lv_obj_set_style_text_font(_labels[i], &lv_font_rsdeck_10, 0);
+        if (isIconTab) {
+            lv_obj_set_style_text_font(_labels[i], &lv_font_montserrat_12, 0);
+            const char* sym = (i == TAB_HOME) ? LV_SYMBOL_HOME : LV_SYMBOL_SETTINGS;
+            lv_label_set_text(_labels[i], sym);
+        } else {
+            lv_obj_set_style_text_font(_labels[i], &lv_font_rsdeck_10, 0);
+            lv_label_set_text(_labels[i], TAB_NAMES[i]);
+        }
         lv_obj_set_style_text_align(_labels[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text(_labels[i], TAB_NAMES[i]);
         lv_obj_align(_labels[i], LV_ALIGN_CENTER, 0, 2);
 
         _badges[i] = lv_obj_create(_cells[i]);
@@ -99,7 +107,10 @@ void LvTabBar::refreshTab(int idx) {
 
     lv_obj_set_style_text_color(_labels[idx],
         lv_color_hex(active ? Theme::TAB_ACTIVE : Theme::TAB_INACTIVE), 0);
-    lv_label_set_text(_labels[idx], TAB_NAMES[idx]);
+    bool isIconTab = (idx == TAB_HOME || idx == TAB_SETTINGS);
+    if (!isIconTab) {
+        lv_label_set_text(_labels[idx], TAB_NAMES[idx]);
+    }
 
     if (_badges[idx] && _badgeLabels[idx] && _unread[idx] > 0) {
         char buf[4];

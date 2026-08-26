@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ui/UIManager.h"
+#include "hal/GPSManager.h"
 #include <Arduino.h>
 #include <functional>
 #include <vector>
@@ -33,6 +34,7 @@ public:
     void setWiFiToggleCallback(std::function<void()> cb) { _wifiToggleCb = cb; }
     void setGPSToggleCallback(std::function<void()> cb) { _gpsToggleCb = cb; }
     void setPeersCallback(std::function<void()> cb) { _peersCb = cb; }
+    void setGPSManager(GPSManager* gps) { _gps = gps; }
 
     const char* title() const override { return "Home"; }
 
@@ -51,6 +53,7 @@ private:
     std::function<void()> _wifiToggleCb;
     std::function<void()> _gpsToggleCb;
     std::function<void()> _peersCb;
+    GPSManager* _gps = nullptr;
     unsigned long _lastRefreshMs = 0;
     unsigned long _lastUptime = 0;
     uint32_t _lastHeap = 0;
