@@ -36,17 +36,27 @@
 #include "ui/screens/LvSettingsScreen.h"
 #include "ui/screens/LvHelpOverlay.h"
 #include "ui/screens/LvQrOverlay.h"
-// Map screen removed
+#include "ui/screens/LvMapScreen.h"
 #include "ui/screens/LvNameInputScreen.h"
 #include "ui/screens/LvTimezoneScreen.h"
 #include "ui/screens/LvDataCleanScreen.h"
+#include "ui/screens/LvAppsScreen.h"
+#include "ui/screens/LvNotesListScreen.h"
+#include "ui/screens/LvNotesEditScreen.h"
+#include "ui/screens/LvFilesScreen.h"
+#include "ui/screens/LvReaderScreen.h"
+#include "ui/screens/LvGpsScreen.h"
 #include "storage/FlashStore.h"
 #include "storage/SDStore.h"
 #include "storage/MessageStore.h"
+#include "maps/TileCache.h"
+#include "maps/TileStore.h"
 #include "reticulum/ReticulumManager.h"
 #include "reticulum/AnnounceManager.h"
 #include "reticulum/LXMFManager.h"
 #include "reticulum/IdentityManager.h"
+#include "reticulum/TelemetryManager.h"
+#include <Utilities/Memory.h>
 #include "transport/LoRaInterface.h"
 #include "transport/WiFiInterface.h"
 #include <WiFiMulti.h>
@@ -59,6 +69,8 @@
 #include "config/UserConfig.h"
 #include "audio/AudioNotify.h"
 #include "util/PerfTrace.h"
+#include "util/LocationParse.h"
+#include "util/FileCrypto.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <atomic>
@@ -93,6 +105,7 @@ HotkeyManager hotkeys;
 UIManager ui;
 FlashStore flash;
 SDStore sdStore;
+TileCache tileCache;
 MessageStore messageStore;
 ReticulumManager rns;
 AnnounceManager* announceManager = nullptr;
@@ -112,6 +125,8 @@ UserConfig userConfig;
 Power powerMgr;
 AudioNotify audio;
 IdentityManager identityMgr;
+
+TelemetryManager telemetryManager;
 #if HAS_GPS
 GPSManager gps;
 #endif
@@ -126,7 +141,15 @@ LvMessageView lvMessageView;
 LvSettingsScreen lvSettingsScreen;
 LvHelpOverlay lvHelpOverlay;
 LvQrOverlay lvQrOverlay;
-// LvMapScreen removed
+LvMapScreen lvMapScreen;
+LvAppsScreen lvAppsScreen;
+LvNotesListScreen lvNotesListScreen;
+LvNotesEditScreen lvNotesEditScreen;
+LvFilesScreen lvFilesScreen;
+LvReaderScreen lvReaderScreen;
+#if HAS_GPS
+LvGpsScreen lvGpsScreen;
+#endif
 LvNameInputScreen lvNameInputScreen;
 LvTimezoneScreen lvTimezoneScreen;
 LvDataCleanScreen lvDataCleanScreen;
@@ -383,7 +406,10 @@ void onHotkeyNewMsg() {
         ui.lvTabBar().setActiveTab(LvTabBar::TAB_CONTACTS);
         ui.setScreen(&lvContactsScreen);
     } else {
-        ui.lvTabBar().setActiveTab(LvTabBar::TAB_NODES);
+        // No saved contacts — drop into the Peers tab so the user can
+        // pick an unsaved peer to message. Tab bar stays visible.
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_PEERS);
         ui.setScreen(&lvNodesScreen);
         ui.lvStatusBar().showToast("Pick a peer to message", 1200);
     }
@@ -394,6 +420,16 @@ void onHotkeySettings() {
 }
 void onHotkeyAnnounce() {
     manualAnnounce();
+}
+void onHotkeyMap() {
+    // Map is no longer a primary tab — it's a tile inside the Apps hub.
+    // Open it as a full-screen app: hide the tab bar so the map reclaims
+    // the bottom 26 px, leave the status bar visible. The map screen
+    // draws its own BACK pill top-left (LvMapScreen::setAppMode(true))
+    // so the user has a discoverable way back to Apps. Esc / Del / BS
+    // still work via _onBack. Ctrl+L remains a handy shortcut.
+    ui.setTabBarVisible(false);
+    ui.setScreen(&lvMapScreen);
 }
 void onHotkeyAutoIface() {
     Serial.println("=== AUTOIFACE DUMP ===");
@@ -948,6 +984,31 @@ static void handleSerialLineCommand(const char* line) {
             sendDiagnosticLiteLinkProof(line + 1);
             break;
         }
+        case 'B': {
+            const char* p = line + 1;
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) {
+                Serial.println("[SERIAL] usage: B<ratio>, for example B2.15 (see 'b' for the current value + calibration formula)");
+                return;
+            }
+            char* end = nullptr;
+            float ratio = strtof(p, &end);
+            if (end == p || ratio < BATTERY_ADC_DIVIDER_MIN || ratio > BATTERY_ADC_DIVIDER_MAX) {
+                Serial.printf("[SERIAL] invalid ratio (must be %.1f..%.1f)\n",
+                    BATTERY_ADC_DIVIDER_MIN, BATTERY_ADC_DIVIDER_MAX);
+                return;
+            }
+            powerMgr.setAdcDividerRatio(ratio);
+            userConfig.settings().adcDividerRatio = ratio;
+            userConfig.save(sdStore, flash);
+            Serial.printf("[SERIAL] adc_divider_ratio set to %.4f (saved)\n", ratio);
+            break;
+        }
+        case 'G': {
+            // G<32hex>  set telemetry collector hub hash (session only)
+            telemetryManager.setHubHashHex(line + 1);
+            break;
+        }
         default:
             Serial.printf("[SERIAL] unknown line command '%c'\n", line[0]);
             break;
@@ -955,9 +1016,307 @@ static void handleSerialLineCommand(const char* line) {
 }
 
 static void printSerialHelp() {
-    Serial.println("[SERIAL] commands: ? help | a announce | t raw-test | d diag | r rssi | i irq | p tx-power-cycle | m min-power | q iq | +/- freq");
-    Serial.println("[SERIAL] line commands: F<hz> exact-frequency | P<dBm> exact-tx-power | L<len> [dest_hash] LXMF test");
+    Serial.println("[SERIAL] commands: ? help | a announce | t raw-test | d diag | r rssi | i irq | p tx-power-cycle | m min-power | q iq | b battery | g telemetry-send | V telemetry-status | x tile-test | X tile-ls | +/- freq");
+    Serial.println("[SERIAL] line commands: F<hz> exact-frequency | P<dBm> exact-tx-power | L<len> [dest_hash] LXMF test | B<ratio> set-adc-divider-ratio | G<32hex> telemetry-hub");
     Serial.println("[SERIAL] lite relay diag: H<len> [dest] Header2 data | J [dest] linkreq | K<ctx_hex> link-data | Y<ctx_hex> link-proof");
+    telemetryManager.printHelp();
+}
+
+// =============================================================================
+// Tile-cache diagnostic (Stage 1 of offline-slippy-map feature)
+// =============================================================================
+// 'X' = list /maps/<mapset>/… on SD and report detected path layout
+//       (z/x/y Meshtastic canonical vs x/y/z alternate — see TileStore.h).
+// 'x' = run a focused decode test: missing tile + non-colliding present tile;
+//       logs wall time, pump count, chunk latency, layout, first 8 RGB565 px.
+//
+// Extended (Bug 1 follow-up): per-zoom tile count + x/y range for each
+// mapset, so a user can confirm whether the SD has full-coverage tiles at
+// low zooms (z=0..3) or only partial coverage in some (x,y) range. The
+// output lets the user distinguish "tiles exist but don't load" (a code
+// bug) from "tiles don't exist for this view" (a data-coverage gap).
+// =============================================================================
+
+#include <vector>
+#include <algorithm>
+#include <climits>
+
+struct ZoomCoverage {
+    int z = -1;
+    int count = 0;
+    int xMin = INT_MAX, xMax = -1;
+    int yMin = INT_MAX, yMax = -1;
+};
+
+static void listSdMaps() {
+    if (!sdStore.isReady()) {
+        Serial.println("[SD] not ready");
+        return;
+    }
+    File root = sdStore.openDir("/maps");
+    if (!root || !root.isDirectory()) {
+        Serial.println("[SD] /maps not present on card");
+        return;
+    }
+    Serial.println("[SD] mapsets under /maps:");
+    File mapset = root.openNextFile();
+    bool anyMapset = false;
+    while (mapset) {
+        if (mapset.isDirectory()) {
+            String mapsetName = String(mapset.name());
+            String mapsetPath = String("/maps/") + mapsetName;
+            // Heuristic: a real mapset dir's first-level children are numeric
+            // x-index dirs. Skip anything that doesn't look like one (avoids
+            // misreporting unrelated top-level folders as mapsets).
+            File xdir = sdStore.openDir(mapsetPath.c_str());
+            if (xdir && xdir.isDirectory()) {
+                File x = xdir.openNextFile();
+                int xCount = 0;
+                bool looksLikeMapset = false;
+                while (x) {
+                    if (x.isDirectory()) {
+                        ++xCount;
+                        // isdigit-check the dir name to confirm x/y/z shape.
+                        const char* n = x.name();
+                        if (n && n[0] && isdigit((unsigned char)n[0])) looksLikeMapset = true;
+                    }
+                    x.close();
+                    x = xdir.openNextFile();
+                }
+                xdir.close();
+                if (looksLikeMapset) {
+                    anyMapset = true;
+                    Serial.printf("[SD]   %s/  (%d x-cols)\n", mapsetName.c_str(), xCount);
+
+                    // ---- Per-zoom tile enumeration ----
+                    // For each x-dir: open it, for each y-dir inside it:
+                    // open it, for each z.png file: parse the basename
+                    // ("<z>.png") as the zoom level and the y-dir/x-dir
+                    // as the (y,x) coords. Aggregate per-zoom counts
+                    // and (x,y) bounds.
+                    std::vector<ZoomCoverage> cov;
+                    auto getOrCreate = [&](int z) -> ZoomCoverage& {
+                        for (auto& c : cov) if (c.z == z) return c;
+                        cov.push_back({z, 0, INT_MAX, INT_MIN, INT_MAX, INT_MIN});
+                        return cov.back();
+                    };
+                    File xdir3 = sdStore.openDir(mapsetPath.c_str());
+                    File xf = xdir3.openNextFile();
+                    while (xf) {
+                        if (!xf.isDirectory()) { xf.close(); xf = xdir3.openNextFile(); continue; }
+                        int xCoord = atoi(xf.name());
+                        String xPath3 = mapsetPath + "/" + xf.name();
+                        xf.close();
+                        File ydir3 = sdStore.openDir(xPath3.c_str());
+                        File yf = ydir3.openNextFile();
+                        while (yf) {
+                            if (!yf.isDirectory()) { yf.close(); yf = ydir3.openNextFile(); continue; }
+                            int yCoord = atoi(yf.name());
+                            String yPath3 = xPath3 + "/" + yf.name();
+                            yf.close();
+                            File zdir3 = sdStore.openDir(yPath3.c_str());
+                            File zf = zdir3.openNextFile();
+                            while (zf) {
+                                if (!zf.isDirectory()) {
+                                    // z.png is a file — parse the basename "z.png"
+                                    const char* fname = zf.name();
+                                    if (fname) {
+                                        int zCoord = atoi(fname);  // atoi("0.png") -> 0
+                                        if (zCoord >= 0 && zCoord <= 22) {
+                                            ZoomCoverage& c = getOrCreate(zCoord);
+                                            ++c.count;
+                                            if (xCoord < c.xMin) c.xMin = xCoord;
+                                            if (xCoord > c.xMax) c.xMax = xCoord;
+                                            if (yCoord < c.yMin) c.yMin = yCoord;
+                                            if (yCoord > c.yMax) c.yMax = yCoord;
+                                        }
+                                    }
+                                }
+                                zf.close();
+                                zf = zdir3.openNextFile();
+                            }
+                            zdir3.close();
+                            yf = ydir3.openNextFile();
+                        }
+                        ydir3.close();
+                        xf = xdir3.openNextFile();
+                    }
+                    xdir3.close();
+
+                    // Sort by zoom ascending for readable output.
+                    std::sort(cov.begin(), cov.end(),
+                              [](const ZoomCoverage& a, const ZoomCoverage& b){ return a.z < b.z; });
+
+                    // ---- Existing single-sample-tile listing ----
+                    // Descend into the first x-dir -> first y-dir -> first
+                    // z.png file to print one REAL, verified-to-exist tile
+                    // coordinate the user can test with (avoids guessing).
+                    File x2 = sdStore.openDir(mapsetPath.c_str()).openNextFile();
+                    while (x2 && !x2.isDirectory()) x2 = File(); // safety, shouldn't happen
+                    File xdir2 = sdStore.openDir(mapsetPath.c_str());
+                    File firstX = xdir2.openNextFile();
+                    while (firstX && !firstX.isDirectory()) { firstX.close(); firstX = xdir2.openNextFile(); }
+                    if (firstX) {
+                        String xName = String(firstX.name());
+                        String xPath = mapsetPath + "/" + xName;
+                        firstX.close();
+                        File ydir = sdStore.openDir(xPath.c_str());
+                        File firstY = ydir.openNextFile();
+                        while (firstY && !firstY.isDirectory()) { firstY.close(); firstY = ydir.openNextFile(); }
+                        if (firstY) {
+                            String yName = String(firstY.name());
+                            String yPath = xPath + "/" + yName;
+                            firstY.close();
+                            File zdir = sdStore.openDir(yPath.c_str());
+                            File firstZ = zdir.openNextFile();
+                            while (firstZ && firstZ.isDirectory()) { firstZ.close(); firstZ = zdir.openNextFile(); }
+                            if (firstZ) {
+                                Serial.printf("[SD]     sample tile: %s/%s/%s/%s (x=%s y=%s z=%s)\n",
+                                              mapsetName.c_str(), xName.c_str(), yName.c_str(), firstZ.name(),
+                                              xName.c_str(), yName.c_str(), firstZ.name());
+                                firstZ.close();
+                            }
+                            zdir.close();
+                        }
+                        ydir.close();
+                    }
+                    xdir2.close();
+
+                    // ---- Print per-zoom coverage ----
+                    // The format is "z=N: count=NNN x=[min..max]/2^z y=[min..max]/2^z"
+                    // so the user can see at-a-glance whether each zoom has
+                    // FULL world coverage (count == 4^z and x/y ranges == [0, 2^z))
+                    // or PARTIAL coverage (which is the typical case for basemap
+                    // z=6+ caches that have been stitched together).
+                    Serial.printf("[SD]     per-zoom coverage for %s:\n", mapsetName.c_str());
+                    for (const auto& c : cov) {
+                        int32_t expected = (c.z >= 0 && c.z < 16) ? ((int32_t)1 << (2 * c.z)) : -1;
+                        const char* status = (expected > 0 && c.count >= expected) ? "FULL"
+                                            : (c.count == 0) ? "EMPTY"
+                                            : "PARTIAL";
+                        Serial.printf("[SD]       z=%2d: count=%-6d x=[%d..%d] y=[%d..%d]  %s%s\n",
+                                      c.z, c.count, c.xMin, c.xMax, c.yMin, c.yMax, status,
+                                      (expected > 0 && c.count < expected) ?
+                                          String(" (expected up to " + String(expected) + " for full world)").c_str() : "");
+                    }
+                }
+            }
+        }
+        mapset.close();
+        mapset = root.openNextFile();
+    }
+    root.close();
+    if (!anyMapset) Serial.println("[SD]   (no mapset dirs found at root)");
+}
+
+static void runTileCacheTest() {
+    // Non-colliding key: z1 tile (1,0). Paths differ by layout
+    //   z/x/y → /maps/<style>/1/1/0.png
+    //   x/y/z → /maps/<style>/1/0/1.png
+    // so this both loads a real tile and locks TileStore's sticky layout.
+    // (z0 0/0/0 and z1 1/1/1 are identical under both layouts — useless probes.)
+    struct { const char* style; int z; int x; int y; } TILE_GUESS = {
+        "Basemapsxyz-OSM", 1, 1, 0
+    };
+    TileStore::resetLayoutDetection();
+    Serial.printf("[TILE-TEST] layout before probe: %s\n",
+                  TileStore::layoutName(TileStore::detectedLayout()));
+    {
+        // Explicit existence probe so serial shows which path hit.
+        const bool zxy = sdStore.exists(
+            TileStore::tilePathLayout(TileStore::Layout::ZXY,
+                                      TILE_GUESS.style, TILE_GUESS.z,
+                                      TILE_GUESS.x, TILE_GUESS.y).c_str());
+        const bool xyz = sdStore.exists(
+            TileStore::tilePathLayout(TileStore::Layout::XYZ,
+                                      TILE_GUESS.style, TILE_GUESS.z,
+                                      TILE_GUESS.x, TILE_GUESS.y).c_str());
+        Serial.printf("[TILE-TEST] probe z=%d x=%d y=%d  zxy=%s  xyz=%s\n",
+                      TILE_GUESS.z, TILE_GUESS.x, TILE_GUESS.y,
+                      zxy ? "HIT" : "miss", xyz ? "HIT" : "miss");
+    }
+    // ---- DEBUG: print queue state for diagnosing "enqueue failed" ----
+    Serial.printf("[TILE-TEST] diag: queue head=%d tail=%d count=%d maxPumpMs=%lu\n",
+                  tileCache.reqHead(), tileCache.reqTail(), tileCache.reqCount(),
+                  (unsigned long)tileCache.maxPumpMs());
+    Serial.println("[TILE-TEST] === TEST 1: missing tile (z=99) ===");
+    if (!tileCache.requestTile("Basemapsxyz-OSM", 99, 0, 0, TileCache::Priority::PRIO_HIGH)) {
+        Serial.println("[TILE-TEST] missing: enqueue failed (queue full)");
+    }
+    unsigned long t0 = millis();
+    int pumps = 0;
+    while (millis() - t0 < 5000) {
+        tileCache.pump();
+        ++pumps;
+        if (tileCache.getTileIfReady("Basemapsxyz-OSM", 99, 0, 0) != nullptr) break;
+    }
+    unsigned long elapsed = millis() - t0;
+    const lv_img_dsc_t* dscNeg = tileCache.getTileIfReady("Basemapsxyz-OSM", 99, 0, 0);
+    Serial.printf("[TILE-TEST] missing: pumps=%d elapsed=%lu ms ready=%s\n",
+                  pumps, (unsigned long)elapsed, dscNeg ? "YES" : "no (good - never marked READY)");
+
+    Serial.println("[TILE-TEST] === TEST 2: present tile (GUESS) ===");
+    Serial.printf("[TILE-TEST] requesting logical z=%d x=%d y=%d (TileStore resolves path)\n",
+                  TILE_GUESS.z, TILE_GUESS.x, TILE_GUESS.y);
+    if (!tileCache.requestTile(TILE_GUESS.style, TILE_GUESS.z, TILE_GUESS.x, TILE_GUESS.y, TileCache::Priority::PRIO_HIGH)) {
+        Serial.println("[TILE-TEST] present: enqueue failed");
+    }
+    t0 = millis();
+    pumps = 0;
+    while (millis() - t0 < 5000) {
+        tileCache.pump();
+        ++pumps;
+        if (tileCache.getTileIfReady(TILE_GUESS.style, TILE_GUESS.z, TILE_GUESS.x, TILE_GUESS.y) != nullptr) break;
+    }
+    elapsed = millis() - t0;
+    const lv_img_dsc_t* dsc = tileCache.getTileIfReady(TILE_GUESS.style, TILE_GUESS.z, TILE_GUESS.x, TILE_GUESS.y);
+    Serial.printf("[TILE-TEST] layout after open: %s\n",
+                  TileStore::layoutName(TileStore::detectedLayout()));
+    if (dsc) {
+        Serial.printf("[TILE-TEST] present: pumps=%d elapsed=%lu ms OK\n",
+                      pumps, (unsigned long)elapsed);
+        Serial.printf("[TILE-TEST] tile=%p w=%u h=%u data_size=%u cf=%d\n",
+                      (const void*)dsc, dsc->header.w, dsc->header.h,
+                      dsc->data_size, (int)dsc->header.cf);
+        const uint16_t* px = (const uint16_t*)dsc->data;
+        Serial.printf("[TILE-TEST] first 8 px (RGB565, hex): ");
+        for (int i = 0; i < 8; ++i) {
+            Serial.printf("0x%04x ", (unsigned)(px[i] & 0xFFFF));
+        }
+        Serial.println();
+    } else {
+        Serial.printf("[TILE-TEST] present: pumps=%d elapsed=%lu ms NOT-READY (file probably absent on SD)\n",
+                      pumps, (unsigned long)elapsed);
+        Serial.println("[TILE-TEST] run 'X' to see what tiles are actually on the SD card");
+    }
+    Serial.printf("[TILE-TEST] chunk latency: last=%lu ms max=%lu ms total_pumps=%lu\n",
+                  (unsigned long)tileCache.lastPumpMs(),
+                  (unsigned long)tileCache.maxPumpMs(),
+                  (unsigned long)tileCache.pumpCount());
+    tileCache.dumpStatus();
+}
+
+static void onHotkeyBatteryDiag() {
+    int raw = powerMgr.batteryRawAdc();
+    float ratio = powerMgr.adcDividerRatio();
+    float v = powerMgr.batteryVoltage();
+    int pct = powerMgr.batteryPercent();
+    bool charging = powerMgr.isCharging();
+    float rawMv = (raw / 4095.0f) * 3300.0f;  // raw ADC as mV, BEFORE divider scaling
+
+    Serial.println("=== BATTERY DIAGNOSTIC ===");
+    Serial.printf("raw_adc=%d  raw_mv=%.1f  divider_ratio=%.4f\n", raw, rawMv, ratio);
+    Serial.printf("voltage=%.3fV  percent=%d%%  charging=%s\n",
+        v, pct, charging ? "yes" : "no");
+    Serial.println("Calibrate: measure the battery with a multimeter (ideally with");
+    Serial.println("USB disconnected), then compute + set the correct ratio:");
+    if (raw > 0) {
+        Serial.printf("  divider_ratio = measured_mv / %.1f\n", rawMv);
+        Serial.println("  Then set it with:  B<ratio>   e.g. B2.15");
+    } else {
+        Serial.println("  (raw_adc is 0 - can't compute a ratio right now)");
+    }
+    Serial.println("==========================");
 }
 
 static void handleSerialCommands() {
@@ -986,7 +1345,7 @@ static void handleSerialCommands() {
         }
 
         if (c == '\r' || c == '\n' || c == ' ' || c == '\t') continue;
-        if (c == 'F' || c == 'P' || c == 'L' || c == 'H' || c == 'J' || c == 'K' || c == 'Y') {
+        if (c == 'F' || c == 'P' || c == 'L' || c == 'H' || c == 'J' || c == 'K' || c == 'Y' || c == 'B' || c == 'G') {
             lineActive = true;
             lineLen = 0;
             line[lineLen++] = c;
@@ -1027,6 +1386,25 @@ static void handleSerialCommands() {
             case 'q':
             case 'Q':
                 toggleDiagnosticInvertIQ();
+                break;
+            case 'b':
+                onHotkeyBatteryDiag();
+                break;
+            case 'g':
+                telemetryManager.handleSerial('g', nullptr);
+                break;
+            case 'v':
+            case 'V':
+                // 'V' = telemetry status dump (counters + state).
+                // Avoided 'T' because it is already mapped to
+                // onHotkeyRadioTest() at the case 't'/'T' branch above.
+                telemetryManager.handleSerial('V', nullptr);
+                break;
+            case 'x':
+                runTileCacheTest();
+                break;
+            case 'X':
+                listSdMaps();
                 break;
             case '+':
             case '=':
@@ -1116,6 +1494,10 @@ void setup() {
     Serial.printf("[BOOT] Reset: %s (%d)\n", reasonStr, (int)reason);
     Serial.printf("[BOOT] Heap: %lu  PSRAM: %lu\n",
                   (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getPsramSize());
+    // Observable firmware identity — if this line is missing after flash, the
+    // write did not stick (common under --no-stub MD5-skip). Do not debug Notes
+    // until serial shows notes-v3 on every boot.
+    Serial.printf("[BUILD] rsDeck %s %s notes-v3\n", __DATE__, __TIME__);
     bootTraceBegin(setupStartMs);
     bootTraceStage("serial-online");
 
@@ -1182,6 +1564,7 @@ void setup() {
     } else {
         Serial.println("[SD] Not detected");
     }
+    tileCache.begin(&sdStore);
     bootTraceStage("sd-probe");
 
     // Verify radio SPI still works after SD init
@@ -1268,6 +1651,7 @@ void setup() {
     hotkeys.registerHotkey('n', "New Message", onHotkeyNewMsg);
     hotkeys.registerHotkey('s', "Settings", onHotkeySettings);
     hotkeys.registerHotkey('a', "Announce", onHotkeyAnnounce);
+    hotkeys.registerHotkey('l', "Map", onHotkeyMap);
     hotkeys.registerHotkey('d', "Diagnostics", onHotkeyDiag);
     hotkeys.registerHotkey('i', "AutoIface dump", onHotkeyAutoIface);
     hotkeys.registerHotkey('t', "Radio Test", onHotkeyRadioTest);
@@ -1345,9 +1729,27 @@ void setup() {
     bootTraceStage("message-store");
 
     // Step 17: LXMF init
-    lxmf.begin(&rns, &messageStore);
+lxmf.begin(&rns, &messageStore);
     lxmf.setMessageCallback([](const LXMFMessage& msg) {
         Serial.printf("[LXMF] Message from %s\n", msg.sourceHash.toHex().substr(0, 8).c_str());
+        // Peer-on-map (rsDeck #64): parse the message body for a single
+        // lat/lon share and stash it on the saved contact. announceManager
+        // is created at step 18 (after this callback is registered) so it
+        // may be null during early boot. Messages that arrive after the
+        // manager is up will be ingested normally. Coordinates are NEVER
+        // logged — the log line only echoes the truncated sender hash so
+        // operators can correlate "what updated my map?" with a sender.
+        if (announceManager) {
+            const std::string& body = msg.content;
+            double lat = 0, lon = 0;
+            if (LocationParse::tryParse(body.c_str(), body.size(), lat, lon)) {
+                std::string hex = msg.sourceHash.toHex();
+                if (announceManager->setLocation(hex, lat, lon)) {
+                    Serial.printf("[MAP] contact location updated from %s\n",
+                                  hex.substr(0, 8).c_str());
+                }
+            }
+        }
         ui.lvTabBar().setUnreadCount(LvTabBar::TAB_MSGS, lxmf.unreadCount());
         audio.requestMessage();
     });
@@ -1356,6 +1758,26 @@ void setup() {
     lvBootScreen.setProgress(0.75f, "LXMF ready");
     // (LVGL boot renders via lv_timer_handler in setProgress)
     bootTraceStage("lxmf-begin");
+
+    // Step 17.5: Telemetry manager (Stage 1 rsDeck #64 / thin hybrid)
+    // Pure optional component — no UI yet, default hub hash is set at
+    // build time. GPS may be disabled; we still bind Power + RNS so
+    // serial `g` can run the privacy-gate diagnostics even before a
+    // first fix lands.
+    telemetryManager.begin(&rns,
+#if HAS_GPS
+                           &gps,
+#else
+                           nullptr,
+#endif
+                           &powerMgr);
+    // Wire UserConfig so Settings > Time & Location > Send Telemetry /
+    // Telemetry Hub can gate the send and override the compiled-in hub
+    // hash. Optional — telemetry still works with the default hub if
+    // this is never called.
+    telemetryManager.setUserConfig(&userConfig);
+    Serial.println("[TELEMETRY] manager bound (rsDeck #64 Stage 1, default hub=da424e0f47657d7575df58a2b83b111b)");
+    bootTraceStage("telemetry-manager");
 
     // Step 18: Announce manager
     lvBootScreen.setProgress(0.78f, "Loading contacts...");
@@ -1547,6 +1969,7 @@ void setup() {
     powerMgr.setBatteryModel(userConfig.settings().batteryModel);
     powerMgr.setChargeThreshold(userConfig.settings().chargeThresholdV);
     powerMgr.setFullBatteryVoltage(userConfig.settings().fullBatteryV);
+    powerMgr.setAdcDividerRatio(userConfig.settings().adcDividerRatio);
 
 
 
@@ -1577,6 +2000,7 @@ void setup() {
     lvHomeScreen.setRadio(&radio);
     lvHomeScreen.setUserConfig(&userConfig);
     lvHomeScreen.setLXMFManager(&lxmf);
+    lvHomeScreen.setGPSManager(&gps);
     lvHomeScreen.setAnnounceManager(announceManager);
     lvHomeScreen.setRadioOnline(radioOnline);
     lvHomeScreen.setTCPClients(&tcpClients);
@@ -1691,7 +2115,10 @@ void setup() {
     });
 #endif
     lvHomeScreen.setPeersCallback([]() {
-        ui.lvTabBar().setActiveTab(LvTabBar::TAB_NODES);
+        // Peers is a primary tab (TAB_PEERS) again — direct jump, no
+        // indirection through Apps. Tab bar stays visible.
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_PEERS);
         ui.setScreen(&lvNodesScreen);
     });
 
@@ -1702,15 +2129,347 @@ void setup() {
         ui.lvTabBar().setActiveTab(LvTabBar::TAB_MSGS);
         ui.setScreen(&lvMessageView);
     });
-
+    // Send GPS from Contacts action modal (same path as Peers used to use).
+#if HAS_GPS
+    lvContactsScreen.setSendGpsCallback([](const std::string& peerHex) {
+        if (!userConfig.settings().gpsLocationEnabled) {
+            ui.lvStatusBar().showToast("GPS location off", 1500);
+            return;
+        }
+        if (!gps.hasLocationFix()) {
+            ui.lvStatusBar().showToast("No GPS fix", 1500);
+            return;
+        }
+        char body[64];
+        snprintf(body, sizeof(body), "LOC %.5f %.5f",
+                 gps.latitude(), gps.longitude());
+        RNS::Bytes destHash;
+        destHash.assignHex(peerHex.c_str());
+        if (announceManager) announceManager->ensureSavedContact(peerHex);
+        if (!lxmf.sendMessage(destHash, body)) {
+            ui.lvStatusBar().showToast("GPS send failed", 1500);
+            return;
+        }
+        ui.lvStatusBar().showToast("GPS sent", 1200);
+    });
+#endif
     lvNodesScreen.setAnnounceManager(announceManager);
     lvNodesScreen.setUIManager(&ui);
     lvNodesScreen.setUserConfig(&userConfig);
     lvNodesScreen.setNodeSelectedCallback([](const std::string& peerHex) {
         lvMessageView.setPeerHex(peerHex);
+        ui.setTabBarVisible(true);
         ui.lvTabBar().setActiveTab(LvTabBar::TAB_MSGS);
         ui.setScreen(&lvMessageView);
     });
+    // Note: Peers is now a primary tab (TAB_PEERS). No setBackCallback —
+    // the user exits Peers via the tab bar like any other tab. The
+    // LvNodesScreen setBackCallback() API is retained for future use
+    // (e.g. embedding Peers somewhere else as an app).
+
+    // Apps tab — grid launcher. Map is the only live tile today;
+    // Notes / Files / GPS / Encrypt show "Coming soon" until those
+    // modules ship. Tapping Map opens the map full-screen (tab bar
+    // hidden, status bar stays). The map screen shows its own BACK pill
+    // (top-left, "< BACK") and routes Esc / Del / BS / ',' / '/' through
+    // _onBack so the user has both touch and keyboard exits.
+    lvAppsScreen.setUIManager(&ui);
+    lvAppsScreen.setOpenMapCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvMapScreen);
+    });
+    // Map always opens as an app (no primary tab for it). Configure the
+    // BACK callback once at startup so it survives across repeated
+    // setScreen() round-trips (each createUI() picks up _appMode).
+    // Returns to the Apps hub with the tab bar restored.
+    lvMapScreen.setAppMode(true);
+    lvMapScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+    // Placeholder tiles — let the screen surface "Coming soon" itself
+    // (it owns UIManager), so we don't need to wire callbacks here.
+    // If/when a tile becomes live, swap in a real callback above.
+
+    // Notes tile is live — open the list screen (app-mode, tab bar
+    // hidden). The list owns the open-edit and back callbacks so it
+    // can route to the editor or back to Apps.
+    lvAppsScreen.setOpenNotesCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvNotesListScreen);
+    });
+
+    // Files tile — browser chrooted to /Files (tab bar hidden).
+    lvAppsScreen.setOpenFilesCallback([]() {
+        lvFilesScreen.resetToRoot();
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvFilesScreen);
+    });
+
+    // Files browser — open .txt/.md in Reader; BACK → Apps.
+    lvFilesScreen.setSDStore(&sdStore);
+    lvFilesScreen.setUIManager(&ui);
+    lvFilesScreen.setOpenFileCallback([](const String& absPath) {
+        lvReaderScreen.setPath(absPath);
+        ui.setScreen(&lvReaderScreen);
+    });
+    lvFilesScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+
+    // Reader — plain-text viewer; BACK → Files (tabs stay hidden).
+    lvReaderScreen.setSDStore(&sdStore);
+    lvReaderScreen.setUIManager(&ui);
+    lvReaderScreen.setBackCallback([]() {
+        ui.setScreen(&lvFilesScreen);
+    });
+
+#if HAS_GPS
+    // GPS status app — fix/sats/alt only (no lat/lon). BACK → Apps;
+    // OPEN MAP → map app-mode (same as Map tile).
+    lvAppsScreen.setOpenGpsCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvGpsScreen);
+    });
+    lvGpsScreen.setGps(&gps);
+    lvGpsScreen.setUIManager(&ui);
+    lvGpsScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+    lvGpsScreen.setOpenMapCallback([]() {
+        ui.setTabBarVisible(false);
+        ui.setScreen(&lvMapScreen);
+    });
+#endif
+
+    // Notes list — full-screen app-mode. Tapping NEW (or a row) routes
+    // to the editor; BACK routes back to Apps (showing the tab bar).
+    lvNotesListScreen.setSDStore(&sdStore);
+    lvNotesListScreen.setUIManager(&ui);
+    lvNotesListScreen.setOpenEditCallback([](const String& filename) {
+        // Filename is generated here so the editor stays clock-agnostic.
+        // Empty → caller asks for a fresh timestamp name. The
+        // generated name defaults to .txt; the editor may swap the
+        // extension to .note.enc at save time when the user picked
+        // "Locked" mode.
+        String name = filename;
+        if (name.length() == 0) {
+            time_t now = time(nullptr);
+            char ts[40];
+            if (now > 1700000000) {
+                struct tm* local = localtime(&now);
+                if (local) {
+                    // Short name so the edit header never clips
+                    // (note_MMDDYY_HHMMSS.txt / .note.enc).
+                    snprintf(ts, sizeof(ts), "note_%02d%02d%02d_%02d%02d%02d.txt",
+                             local->tm_mon + 1, local->tm_mday, (local->tm_year + 1900) % 100,
+                             local->tm_hour, local->tm_min, local->tm_sec);
+                    name = String(ts);
+                }
+            }
+            if (name.length() == 0) {
+                // RTC unset (e.g. before GPS sync) — fall back to a
+                // millis-based name so the user can still create notes.
+                unsigned long ms = millis();
+                snprintf(ts, sizeof(ts), "note_m%lu.txt", ms);
+                name = String(ts);
+            }
+        }
+        lvNotesEditScreen.setFilename(name);
+        ui.setScreen(&lvNotesEditScreen);
+    });
+    lvNotesListScreen.setBackCallback([]() {
+        ui.setTabBarVisible(true);
+        ui.lvTabBar().setActiveTab(LvTabBar::TAB_APPS);
+        ui.setScreen(&lvAppsScreen);
+    });
+
+    // Notes edit — full-screen app-mode. SAVE writes through SDStore
+    // (plain .txt) or FileCrypto (locked .note.enc). BACK discards
+    // unsaved edits (MVP) and returns to the list (tabs stay hidden —
+    // list takes care of its own tab-bar visibility).
+    lvNotesEditScreen.setSDStore(&sdStore);
+    lvNotesEditScreen.setUIManager(&ui);
+    lvNotesEditScreen.setSaveCallback([](const String& body, bool locked,
+                                        const char* pass, size_t passLen) {
+        if (!sdStore.isReady()) {
+            ui.lvStatusBar().showToast("No SD card", 1500);
+            return;
+        }
+        String name = lvNotesEditScreen.filename();
+        // Empty-body guard — SDStore::writeString would happily create a
+        // 0-byte file, but the spec's intent is "notes have content".
+        // Allow blank notes for now; we don't enforce non-empty.
+        if (name.length() == 0) {
+            // Should never happen — the open-edit callback assigns a
+            // name. Bail defensively.
+            ui.lvStatusBar().showToast("Filename missing", 1500);
+            return;
+        }
+        if (!sdStore.ensureDir("/Files")) {
+            ui.lvStatusBar().showToast("Save failed (mkdir)", 1500);
+            return;
+        }
+        if (!sdStore.ensureDir("/Files/notes")) {
+            ui.lvStatusBar().showToast("Save failed (mkdir)", 1500);
+            return;
+        }
+
+        // ---- LOCKED save ----
+        // The editor already confirmed the passphrase twice (enter +
+        // confirm match). Here we encrypt in RAM and write the
+        // ciphertext blob directly to SD — no intermediate cleartext
+        // file is ever staged. Passphrase / plaintext are NEVER
+        // logged; only the resulting file path and length.
+        if (locked) {
+            if (!pass || passLen == 0) {
+                ui.lvStatusBar().showToast("Passphrase missing", 1500);
+                return;
+            }
+            // If the original filename was plain (.txt) and the user
+            // picked LOCKED before saving a NEW note, swap the
+            // extension so the resulting file matches the editor's
+            // visual mode. For an EXISTING file we keep the name the
+            // editor has — re-saving an existing encrypted file uses
+            // the same .note.enc name; re-saving a plain .txt as
+            // locked renames the live file to .note.enc but we do not
+            // actively delete the .txt (MVP — left to manual cleanup).
+            String encName = name;
+            // Heuristic: if the existing filename has no .note.enc
+            // extension, replace its extension with .note.enc.
+            int dot = encName.lastIndexOf('.');
+            if (dot > 0) {
+                String tail = encName.substring(dot);
+                tail.toLowerCase();
+                if (tail != String(".note.enc")) {
+                    encName = encName.substring(0, dot) + String(".note.enc");
+                }
+            } else {
+                encName = encName + String(".note.enc");
+            }
+
+            // Allocate the blob buffer on the stack. Max plaintext
+            // is 4 KB, blob overhead is 54 B (38 header + 16 tag).
+            uint8_t blob[FileCrypto::HEADER_SIZE +
+                         LvNotesEditScreen::MAX_BODY_LEN +
+                         FileCrypto::TAG_SIZE];
+            size_t blobLen = 0;
+            bool ok = FileCrypto::encrypt(pass, passLen,
+                                          (const uint8_t*)body.c_str(),
+                                          body.length(),
+                                          blob, sizeof(blob), &blobLen);
+            // Wipe the local copy of the passphrase the caller
+            // handed us. The editor's own pass buffer was already
+            // wiped by its post-save path; we wipe here defensively.
+            FileCrypto::wipeSensitive(const_cast<char*>(pass), passLen);
+            if (!ok) {
+                FileCrypto::wipeSensitive(blob, sizeof(blob));
+                Serial.printf("[NOTES] save: encrypt failed for %s\n",
+                              encName.c_str());
+                ui.lvStatusBar().showToast("Save failed (encrypt)", 1500);
+                return;
+            }
+
+            String encPath = String("/Files/notes/") + encName;
+            bool wrote = sdStore.writeAtomic(encPath.c_str(), blob, blobLen);
+            // Always wipe the (now-encrypted-or-not) blob before
+            // returning — it contains either the ciphertext (still
+            // sensitive) or partial garbage from a failed encrypt.
+            FileCrypto::wipeSensitive(blob, sizeof(blob));
+            if (!wrote || !sdStore.exists(encPath.c_str())) {
+                Serial.printf("[NOTES] save: writeAtomic failed for %s\n",
+                              encName.c_str());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+            // Update the editor's filename so subsequent saves (and
+            // the BACK-then-reopen flow) use the .note.enc name. We
+            // don't change _locked; it stays true.
+            lvNotesEditScreen.setFilename(encName);
+            Serial.printf("[NOTES] save: ok locked path=%s len=%u\n",
+                          encPath.c_str(), (unsigned)blobLen);
+            ui.lvStatusBar().showToast("Saved (locked)", 1200);
+            return;
+        }
+
+        // ---- PLAIN save ----
+        String path = String("/Files/notes/") + name;
+        // writeString already chains writeAtomic → writeSimple fallback,
+        // but the list empty-state bug taught us to verify on disk
+        // after a "successful" return: if the rename path dropped the
+        // LFN or the FS layer swallowed a transient error, the list
+        // would otherwise show "No notes yet" and the user would think
+        // their save was lost. The body is intentionally NOT logged —
+        // only the path, byte count, and ok/fail status.
+        bool wrote = sdStore.writeString(path.c_str(), body);
+        if (!wrote || !sdStore.exists(path.c_str())) {
+            if (!wrote) {
+                Serial.printf("[NOTES] save: writeString failed for %s (len=%u)\n",
+                              name.c_str(), (unsigned)body.length());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+            Serial.printf("[NOTES] save: writeString ok but file missing at %s — retrying direct\n",
+                          path.c_str());
+            if (!sdStore.writeSimple(path.c_str(),
+                                     (const uint8_t*)body.c_str(),
+                                     body.length())) {
+                Serial.printf("[NOTES] save: writeSimple retry also failed for %s\n",
+                              name.c_str());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+            if (!sdStore.exists(path.c_str())) {
+                Serial.printf("[NOTES] save: writeSimple ok but file still missing at %s\n",
+                              path.c_str());
+                ui.lvStatusBar().showToast("Save failed", 1500);
+                return;
+            }
+        }
+        Serial.printf("[NOTES] save: ok path=%s len=%u\n",
+                      path.c_str(), (unsigned)body.length());
+        ui.lvStatusBar().showToast("Saved", 1200);
+    });
+    lvNotesEditScreen.setBackCallback([]() {
+        ui.setScreen(&lvNotesListScreen);
+    });
+
+    // "Send GPS" action from the nodes screen action menu. Build the
+    // `LOC lat lon` body from the current fix and dispatch via LXMF.
+    // We only run when the user has GPS location tracking on AND has a
+    // fresh fix; otherwise we toast the reason. Coordinates are never
+    // logged — the payload itself is the only place they appear.
+#if HAS_GPS
+    lvNodesScreen.setSendGpsCallback([](const std::string& peerHex) {
+        if (!userConfig.settings().gpsLocationEnabled) {
+            ui.lvStatusBar().showToast("GPS location off", 1500);
+            return;
+        }
+        if (!gps.hasLocationFix()) {
+            ui.lvStatusBar().showToast("No GPS fix", 1500);
+            return;
+        }
+        char body[64];
+        snprintf(body, sizeof(body), "LOC %.5f %.5f",
+                 gps.latitude(), gps.longitude());
+        RNS::Bytes destHash;
+        destHash.assignHex(peerHex.c_str());
+        // Mirror a contact before sending so the receiving side can
+        // also see this peer in its contact list (matches the chat
+        // path's expectations and lets them reply).
+        if (announceManager) announceManager->ensureSavedContact(peerHex);
+        if (!lxmf.sendMessage(destHash, body)) {
+            ui.lvStatusBar().showToast("GPS send failed", 1500);
+            return;
+        }
+        ui.lvStatusBar().showToast("GPS sent", 1200);
+    });
+#endif
 
     lvMessagesScreen.setLXMFManager(&lxmf);
     lvMessagesScreen.setAnnounceManager(announceManager);
@@ -1723,6 +2482,10 @@ void setup() {
     lvMessageView.setLXMFManager(&lxmf);
     lvMessageView.setAnnounceManager(announceManager);
     lvMessageView.setUIManager(&ui);
+    lvMessageView.setUserConfig(&userConfig);
+#if HAS_GPS
+    lvMessageView.setGPSManager(&gps);
+#endif
     lvMessageView.setBackCallback([]() {
         ui.setScreen(&lvMessagesScreen);
     });
@@ -1737,6 +2500,7 @@ void setup() {
     lvSettingsScreen.setTCPClients(&tcpClients);
     lvSettingsScreen.setRNS(&rns);
     lvSettingsScreen.setIdentityManager(&identityMgr);
+    lvSettingsScreen.setAnnounceManager(announceManager);
     lvSettingsScreen.setUIManager(&ui);
     lvSettingsScreen.setIdentityHash(rns.destinationHashStr());
     lvSettingsScreen.setDestinationHash(rns.destinationHashHex());
@@ -1778,6 +2542,22 @@ void setup() {
     lvSettingsScreen.setShowQrCallback(showQr);
     lvContactsScreen.setShowQrCallback(showQr);
 
+    // Map screen — wired with the lazy-allocated tile cache (no PSRAM
+    // cost until the user actually opens the screen) and the GPS manager
+    // for the follow-mode marker. setUIManager() lets the map screen
+    // route back to the previous tab on Esc without keeping a back-ref
+    // through some other channel.
+    lvMapScreen.setTileCache(&tileCache);
+#if HAS_GPS
+    lvMapScreen.setGPSManager(&gps);
+#endif
+    lvMapScreen.setUIManager(&ui);
+    // Peer-on-map (rsDeck #64): the map screen reads saved contacts that
+    // have lat/lon and renders diamond pins. announceManager is null only
+    // if the boot sequence above failed before step 18, which would have
+    // already aborted the rest of setup.
+    if (announceManager) lvMapScreen.setAnnounceManager(announceManager);
+
     // LVGL help overlay
     lvHelpOverlay.create();
     lvQrOverlay.create();
@@ -1786,10 +2566,20 @@ void setup() {
     lvTabScreens[LvTabBar::TAB_HOME]     = &lvHomeScreen;
     lvTabScreens[LvTabBar::TAB_CONTACTS] = &lvContactsScreen;
     lvTabScreens[LvTabBar::TAB_MSGS]     = &lvMessagesScreen;
-    lvTabScreens[LvTabBar::TAB_NODES]    = &lvNodesScreen;
+    // TAB_PEERS is the Peers screen (was a tile before — promoted back
+    // to a tab to match Pro).
+    lvTabScreens[LvTabBar::TAB_PEERS]    = &lvNodesScreen;
+    lvTabScreens[LvTabBar::TAB_APPS]     = &lvAppsScreen;
+    // Note: Map is NOT in the tab array — it lives inside Apps. Open via
+    // lvAppsScreen.setOpenMapCallback or Ctrl+L (onHotkeyMap).
     lvTabScreens[LvTabBar::TAB_SETTINGS] = &lvSettingsScreen;
 
     ui.lvTabBar().setTabCallback([](int tab) {
+        // Selecting any primary tab restores the tab bar (it's always
+        // visible in tab mode). If the user is currently in app-style
+        // (e.g. Map open from Apps) and they tap a tab, this clears the
+        // flag so the bar reappears.
+        ui.setTabBarVisible(true);
         if (lvTabScreens[tab]) ui.setScreen(lvTabScreens[tab]);
     });
     bootTraceStage("screen-wiring");
@@ -1931,6 +2721,7 @@ void setup() {
     bootTraceStage("keyboard-auto");
 
     Serial.println("[BOOT] rsDeck ready");
+    Serial.printf("[BUILD] rsDeck %s %s notes-v3\n", __DATE__, __TIME__);
     Serial.printf("[BOOT] Summary: radio=%s flash=%s sd=%s\n",
                   radioOnline ? "ONLINE" : "OFFLINE",
                   flash.isReady() ? "OK" : "FAIL",
@@ -2032,9 +2823,14 @@ void loop() {
         }
     }
 
-    // 4.5 Keep LVGL responsive after heavy RNS processing (announce floods)
+    // 4.5 Keep UI/touch responsive after heavy RNS (I2P announce floods).
+    // Touch is GT911 on I2C — not SPI contention with LoRa/display — but
+    // inputManager only polls once per loop. Re-poll + LVGL when RNS ran long.
     if (rnsDuration > LVGL_INTERVAL_MS && powerMgr.isScreenOn()) {
+        inputManager.update();
+        if (inputManager.hadStrongActivity()) powerMgr.activity();
         lv_timer_handler();
+        lastLvglTime = millis();
     }
 
     if (bootComplete && bootAnnouncePending && (long)(millis() - bootAnnounceAt) >= 0) {
@@ -2071,6 +2867,19 @@ void loop() {
     lxmf.loop();
     if (announceManager) announceManager->loop();
     audio.loop();
+
+    telemetryManager.loop();
+    // 6.5 Tile cache pump — one chunk per main-loop iteration. pngle's decode
+    //     bursts are safe at any default radio preset (measured ~60-180ms max
+    //     vs 550ms+ minimum packet airtime at SF11/250kHz) but could theoretically
+    //     collide with a very fast/short-packet custom preset (SF7-class,
+    //     ~30-80ms airtime) if a burst straddles two back-to-back RX completions.
+    //     Cheap guard: skip this iteration's pump if a packet is already
+    //     waiting to be drained (LoRaInterface::loop() reads it just above),
+    //     so we never start new tile work while RX readout is pending.
+    if (!radio.packetAvailable) {
+        tileCache.pump();
+    }
 
     // 7. WiFi STA connection handler
     if (wifiSTAStarted) {
@@ -2300,16 +3109,32 @@ void loop() {
                 Serial.printf("[LXMF-DIAG] tcp_rx=%d tcp_skip=%lu ann_filt=%lu\n",
                     tcpRx, (unsigned long)diagTcpSkipEvents,
                     (unsigned long)rns.announceFilterCount());
+                // ContainerAllocator live size (path/identity/announce maps).
+                // faults>0 means identity/path store failed (was the paths=0 OOM).
+                {
+                    const auto& ca = RNS::Utilities::Memory::container_allocator_info;
+                    Serial.printf("[MEM-DIAG] container_bytes=%llu allocs=%lu frees=%lu faults=%lu\n",
+                        (unsigned long long)ca.alloc_size,
+                        (unsigned long)ca.alloc_count,
+                        (unsigned long)ca.free_count,
+                        (unsigned long)ca.alloc_fault);
+                }
                 diagTcpSkipEvents = 0;
             }
 #if HAS_GPS
             if (userConfig.settings().gpsTimeEnabled) {
-                Serial.printf("[GPS] sats=%d timeFix=%s locFix=%s syncs=%lu chars=%lu\n",
+                const auto tc = telemetryManager.counters();
+                Serial.printf("[GPS] sats=%d timeFix=%s locFix=%s syncs=%lu chars=%lu telemTicks=%lu telemNoFix=%lu telemStale=%lu telemAbort=%lu telemTx=%lu\n",
                     gps.satellites(),
                     gps.hasTimeFix() ? "YES" : "NO",
                     gps.hasLocationFix() ? "YES" : "NO",
                     (unsigned long)gps.timeSyncCount(),
-                    (unsigned long)gps.charsProcessed());
+                    (unsigned long)gps.charsProcessed(),
+                    (unsigned long)tc.ticksFired,
+                    (unsigned long)tc.refusedNoFix,
+                    (unsigned long)tc.refusedStale,
+                    (unsigned long)tc.discoveryAborted,
+                    (unsigned long)tc.txAccepted);
             }
 #endif
             maxLoopTime = 0;

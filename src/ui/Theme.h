@@ -71,8 +71,9 @@ constexpr int CONTENT_H      = SCREEN_H - STATUS_BAR_H - TAB_BAR_H;
 constexpr int CONTENT_W      = SCREEN_W;
 
 // --- Tab Bar ---
-constexpr int TAB_COUNT      = 5;
-constexpr int TAB_W          = SCREEN_W / TAB_COUNT;
+    constexpr int TAB_COUNT      = 6;
+    constexpr int ICON_TAB_W     = 38;
+    constexpr int TEXT_TAB_W     = 57;
 constexpr int TAB_BADGE_W    = 18;
 constexpr int TAB_BADGE_H    = 10;
 

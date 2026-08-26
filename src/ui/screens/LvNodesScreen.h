@@ -11,6 +11,16 @@ class UserConfig;
 class LvNodesScreen : public LvScreen {
 public:
     using NodeSelectedCallback = std::function<void(const std::string& peerHex)>;
+    // Send GPS to a peer. Callback is expected to format the current
+    // location as `LOC lat lon` and dispatch via LXMF (the screen knows
+    // nothing about GPS/LXMF internals — main.cpp wires the deps).
+    using SendGpsCallback = std::function<void(const std::string& peerHex)>;
+    // Back navigation — wired when Peers is opened "as an app" from the
+    // Apps tab (no tab bar visible). On Esc / back from the browse mode
+    // we invoke this callback so the caller can restore the tab bar and
+    // navigate to the Apps hub. Unset in legacy "tabbed Peers" mode
+    // (where the tab bar handles back itself).
+    using BackCallback = std::function<void()>;
 
     void createUI(lv_obj_t* parent) override;
     void destroyUI() override;
@@ -22,6 +32,8 @@ public:
     void setNodeSelectedCallback(NodeSelectedCallback cb) { _onSelect = cb; }
     void setUIManager(class UIManager* ui) { _ui = ui; }
     void setUserConfig(UserConfig* cfg) { _cfg = cfg; }
+    void setSendGpsCallback(SendGpsCallback cb) { _onSendGps = cb; }
+    void setBackCallback(BackCallback cb) { _onBack = cb; }
     bool handleLongPress() override;
 
     const char* title() const override { return "Peers"; }
@@ -38,11 +50,17 @@ private:
     void updateMenuSelection();
     void updateNicknameDisplay();
     void updateOverlayDetails(const char* title);
+    // Number of menu entries visible in the current action-menu state.
+    // 3 for unsaved peers (Save/Message/Close), 5 for saved contacts
+    // (Message/Send GPS/Edit Name/Remove/Close).
+    int menuEntryCount() const;
 
     AnnounceManager* _am = nullptr;
     class UIManager* _ui = nullptr;
     UserConfig* _cfg = nullptr;
     NodeSelectedCallback _onSelect;
+    SendGpsCallback _onSendGps;
+    BackCallback _onBack;
     bool _confirmDelete = false;
     bool _focusActive = false;
 
@@ -52,13 +70,15 @@ private:
     int _actionNodeIdx = -1;
     String _nicknameText;
 
-    // Overlay widgets
+    // Overlay widgets — up to 5 entries for saved contacts (incl. Remove).
+    // Unsaved peers use 3 slots; extras hidden via LV_OBJ_FLAG_HIDDEN.
+    static constexpr int MAX_MENU_ENTRIES = 5;
     lv_obj_t* _overlay = nullptr;
     lv_obj_t* _overlayTitle = nullptr;
     lv_obj_t* _overlayMeta = nullptr;
     lv_obj_t* _overlayReach = nullptr;
-    lv_obj_t* _menuLabels[3] = {};
-    lv_obj_t* _menuBtns[3] = {};
+    lv_obj_t* _menuLabels[MAX_MENU_ENTRIES] = {};
+    lv_obj_t* _menuBtns[MAX_MENU_ENTRIES] = {};
     lv_obj_t* _nicknameBox = nullptr;
     lv_obj_t* _nicknameLbl = nullptr;
     lv_obj_t* _nicknameHint = nullptr;

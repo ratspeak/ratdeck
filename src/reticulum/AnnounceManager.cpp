@@ -105,35 +105,11 @@ void AnnounceManager::received_announce(
     const RNS::Identity& announced_identity,
     const RNS::Bytes& app_data)
 {
-    std::string name;
-    if (app_data.size() > 0) {
-        Serial.printf("[ANNOUNCE-RX] app_data: %d bytes hex: ", (int)app_data.size());
-        for (size_t i = 0; i < std::min((size_t)16, app_data.size()); i++)
-            Serial.printf("%02X", app_data.data()[i]);
-        Serial.println();
-        std::string rawName = extractMsgPackName(app_data.data(), app_data.size());
-        if (rawName.empty()) {
-            bool isText = app_data.size() > 0 && app_data.size() <= 32;
-            for (size_t i = 0; isText && i < app_data.size(); i++) {
-                uint8_t c = app_data.data()[i];
-                if (c < 0x20 || c > 0x7E) isText = false;
-            }
-            if (isText) {
-                rawName = app_data.toString();
-            } else {
-                Serial.printf("[ANNOUNCE] Unknown app_data format (%d bytes): ", (int)app_data.size());
-                for (size_t i = 0; i < std::min((size_t)32, app_data.size()); i++) {
-                    Serial.printf("%02X ", app_data.data()[i]);
-                }
-                Serial.println();
-            }
-        }
-        name = sanitizeName(rawName);
-    }
-    // Filter out own announces
+    // Cheap filters FIRST — I2P/TCP floods can deliver dozens of announces
+    // per second. Serial I/O + flash writes here starve the main loop and
+    // make GT911 touch (polled once per loop) feel dead.
     if (_localDestHash.size() > 0 && destination_hash == _localDestHash) return;
 
-    // Layer 3: Global announce rate limit — cap application-layer processing
     {
         unsigned long now = millis();
         if (now - _globalAnnounceWindowStart >= 1000) {
@@ -141,6 +117,20 @@ void AnnounceManager::received_announce(
             _globalAnnounceCount = 0;
         }
         if (++_globalAnnounceCount > MAX_GLOBAL_ANNOUNCES_PER_SEC) return;
+    }
+
+    std::string name;
+    if (app_data.size() > 0) {
+        std::string rawName = extractMsgPackName(app_data.data(), app_data.size());
+        if (rawName.empty()) {
+            bool isText = app_data.size() > 0 && app_data.size() <= 32;
+            for (size_t i = 0; isText && i < app_data.size(); i++) {
+                uint8_t c = app_data.data()[i];
+                if (c < 0x20 || c > 0x7E) isText = false;
+            }
+            if (isText) rawName = app_data.toString();
+        }
+        name = sanitizeName(rawName);
     }
 
     std::string key = makeKey(destination_hash);
@@ -162,35 +152,31 @@ void AnnounceManager::received_announce(
         // hops_to() is expensive (linear routing table scan) — only call for saved contacts
         if (node.saved) node.hops = RNS::Transport::hops_to(destination_hash);
         if (_loraIf) { node.rssi = _loraIf->lastRxRssi(); node.snr = _loraIf->lastRxSnr(); }
-        // Name cache update — skip expensive toHex() for unnamed re-announces
+        // Name cache: mark dirty only — loop() persists (never flash mid-flood).
         if (!name.empty()) {
             std::string destHex = destination_hash.toHex();
             auto nc = _nameCache.find(destHex);
             if (nc == _nameCache.end() || nc->second != name) {
                 _nameCache[destHex] = name;
                 _nameCacheDirty = true;
-                saveNameCache();
-                _nameCacheDirty = false;
             }
         }
-        if (!idHex.empty()) {
-            persistKnownDestinationsAfterAnnounce(
-                identityChanged ? "identity update" : "repeat announce",
-                identityChanged);
+        // Only force-persist on identity change; repeat announces are deferred.
+        if (!idHex.empty() && identityChanged) {
+            persistKnownDestinationsAfterAnnounce("identity update", true);
         }
         return;
     }
 
-    // New node — toHex needed for log + name cache
+    // New node — toHex needed for name cache key
     std::string destHex = destination_hash.toHex();
-    Serial.printf("[ANNOUNCE] New: %s name=\"%s\"\n", destHex.c_str(), name.c_str());
 
     if (!name.empty()) {
         auto nc = _nameCache.find(destHex);
         if (nc == _nameCache.end() || nc->second != name) {
             _nameCache[destHex] = name;
             _nameCacheDirty = true;
-            // Cap name cache size: prune entries not in _nodes or saved contacts
+            // Cap name cache size: prune entries not in _nodes
             if ((int)_nameCache.size() > MAX_NAME_CACHE) {
                 for (auto it = _nameCache.begin(); it != _nameCache.end() && (int)_nameCache.size() > MAX_NAME_CACHE; ) {
                     RNS::Bytes h; h.assignHex(it->first.c_str());
@@ -201,8 +187,7 @@ void AnnounceManager::received_announce(
                     }
                 }
             }
-            saveNameCache();
-            _nameCacheDirty = false;
+            // Defer saveNameCache to loop() — flash write here freezes UI.
         }
     }
 
@@ -348,6 +333,81 @@ void AnnounceManager::addManualContact(const std::string& hexHash, const std::st
     saveContact(node);
 }
 
+// Peer-on-map (rsDeck #64): make sure a node exists as a saved contact.
+// No-ops on a malformed hash. Returns true iff a saved contact with this
+// hash is present after the call (whether we created it or it already
+// existed). Used by the LXMF message path so a parsed location share
+// always has a contact to attach to.
+bool AnnounceManager::ensureSavedContact(const std::string& hexHash, const std::string& nameHint) {
+    if (hexHash.empty()) return false;
+    auto* existing = findNodeByHex(hexHash);
+    if (existing) {
+        if (existing->saved) return true;
+        // Promote transient → saved. The address-book path always keys by
+        // raw hash bytes (not the prefix-fallback lookup in findNodeByHex)
+        // so mutate via the raw key to update the in-place node.
+        RNS::Bytes raw;
+        raw.assignHex(hexHash.c_str());
+        auto it = _hashIndex.find(makeKey(raw));
+        if (it == _hashIndex.end()) return false;
+        auto& node = _nodes[it->second];
+        node.saved = true;
+        // Don't touch the name unless the hint actually adds info — saved
+        // contacts own their local alias (mirrors the received_announce()
+        // rule for repeats).
+        if (!nameHint.empty()) {
+            std::string safeName = sanitizeName(nameHint);
+            if (!safeName.empty()) node.name = safeName;
+        }
+        saveContact(node);
+        return true;
+    }
+    // Not present at all — fall back to manual add so the contact exists.
+    // We deliberately do NOT fabricate an identityHex here (we have no
+    // identity to recover from for an unknown hash); announce-driven
+    // enrichment happens later when they announce.
+    addManualContact(hexHash, nameHint);
+    auto* after = findNodeByHex(hexHash);
+    return after != nullptr && after->saved;
+}
+
+// Peer-on-map (rsDeck #64): attach lat/lon to an existing saved contact.
+// If the node isn't present (e.g. location arrived in a message before
+// the first announce), ensureSavedContact() creates it. Returns true iff
+// the value was actually written to a saved-contact's fields. Never logs
+// lat/lon — the map UI gets them via nodes() and renders the pin.
+bool AnnounceManager::setLocation(const std::string& hexHash, double lat, double lon) {
+    if (hexHash.empty()) return false;
+    // Reject obviously bad values the parser should have filtered, but
+    // guard again here in case a future caller bypasses LocationParse.
+    if (lat < -90.0 || lat > 90.0) return false;
+    if (lon < -180.0 || lon > 180.0) return false;
+    if (lat == 0.0 && lon == 0.0) return false;
+
+    auto* node = findNodeByHex(hexHash);
+    if (!node || !node->saved) {
+        // Either unknown or transient — promote/create as saved so the
+        // pin rule ("only saved contacts show on the map") holds. Use the
+        // raw-hex lookup because the existing node (if any) lives under
+        // its raw key.
+        ensureSavedContact(hexHash, "");
+        node = findNodeByHex(hexHash);
+        if (!node || !node->saved) return false;
+    }
+
+    RNS::Bytes raw;
+    raw.assignHex(hexHash.c_str());
+    auto it = _hashIndex.find(makeKey(raw));
+    if (it == _hashIndex.end()) return false;
+    auto& n = _nodes[it->second];
+    n.lat = lat;
+    n.lon = lon;
+    n.hasLocation = true;
+    n.locTs = millis();
+    saveContact(n);
+    return true;
+}
+
 void AnnounceManager::evictStale(unsigned long maxAgeMs) {
     unsigned long now = millis();
     _nodes.erase(std::remove_if(_nodes.begin(), _nodes.end(),
@@ -388,6 +448,14 @@ void AnnounceManager::saveContact(const DiscoveredNode& node) {
     std::string hexHash = node.hash.toHex();
     JsonDocument doc;
     doc["hash"] = hexHash; doc["name"] = node.name;
+    // Peer-on-map (rsDeck #64): persist lat/lon for saved contacts that have
+    // shared location. locTs is intentionally skipped — millis() is boot-
+    // relative and would mislead after a reboot; the absence of locTs on
+    // disk is fine because hasLocation+lat+lon is enough to render the pin.
+    if (node.hasLocation) {
+        doc["lat"] = node.lat;
+        doc["lon"] = node.lon;
+    }
     String json;
     serializeJson(doc, json);
     String filename = hexHash.substr(0, 16).c_str();
@@ -442,6 +510,22 @@ void AnnounceManager::loadContacts() {
                                 node.hops = 0;
                                 node.lastSeen = 0;
                                 node.saved = true;
+                                // Peer-on-map (rsDeck #64): restore a saved
+                                // contact's last-known lat/lon if present. Both
+                                // fields must parse as doubles AND pass the
+                                // WGS84 range check before we trust them — any
+                                // corruption stays quarantined to hasLocation=false.
+                                if (doc["lat"].is<double>() && doc["lon"].is<double>()) {
+                                    double la = doc["lat"].as<double>();
+                                    double lo = doc["lon"].as<double>();
+                                    if ((la != 0.0 || lo != 0.0) &&
+                                        la >= -90.0 && la <= 90.0 &&
+                                        lo >= -180.0 && lo <= 180.0) {
+                                        node.lat = la;
+                                        node.lon = lo;
+                                        node.hasLocation = true;
+                                    }
+                                }
                                 _hashIndex[key] = (int)_nodes.size();
                                 _nodes.push_back(node);
                                 loaded++;

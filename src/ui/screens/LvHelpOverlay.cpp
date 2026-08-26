@@ -72,6 +72,7 @@ void LvHelpOverlay::create() {
     addHelpRow(_overlay, "Ctrl+N", "New message");
     addHelpRow(_overlay, "Ctrl+S", "Settings");
     addHelpRow(_overlay, "Ctrl+A", "Announce");
+    addHelpRow(_overlay, "Ctrl+L", "Offline map");
     addHelpRow(_overlay, "Ctrl+D/I/T/R", "Diagnostics tools");
 
     lv_obj_t* footer = makeLabel(_overlay, "Any key or tap closes",

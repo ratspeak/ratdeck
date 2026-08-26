@@ -1,0 +1,27 @@
+{
+  "name": "pngle",
+  "version": "1.1.0",
+  "description": "A stream based portable PNG Loader for Embedding",
+  "keywords": "png, png-loader, png-decoder, c, arduino, mbed, esp32, esp8266, stm32, m5stack",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kikuchan/pngle.git"
+  },
+  "authors": [
+    {
+      "name": "kikuchan",
+      "email": "kikuchan98@gmail.com"
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/kikuchan/pngle",
+  "export": {
+    "include": [
+        "src",
+        "examples/**/*.ino",
+        "examples/**/*.c"
+    ]
+  },
+  "frameworks": "*",
+  "platforms": "*"
+}

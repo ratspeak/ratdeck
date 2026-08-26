@@ -1,6 +1,7 @@
 #include "LvStatusBar.h"
 #include "Theme.h"
 #include "LvTheme.h"
+#include "config/Config.h"
 #include <Arduino.h>
 #include <cstdio>
 #include <time.h>
@@ -236,7 +237,7 @@ void LvStatusBar::refreshIndicators() {
     const bool txFlash = _announceFlashEnd > 0 && millis() < _announceFlashEnd;
     const uint32_t brandColor = txFlash ? Theme::WARNING_CLR : Theme::ACCENT;
     char buf[160];
-    snprintf(buf, sizeof(buf), "#%06X Ratspeak.org#", (unsigned int)brandColor);
+    snprintf(buf, sizeof(buf), "#%06X " RSDECK_BRAND_TEXT "#", (unsigned int)brandColor);
     lv_label_set_text(_lblLinks, buf);
 
     if (_bar) {

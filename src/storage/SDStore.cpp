@@ -93,6 +93,11 @@ bool SDStore::readFile(const char* path, uint8_t* buffer, size_t maxLen, size_t&
     return bytesRead == size;
 }
 
+File SDStore::openFile(const char* path) {
+    if (!_ready) return File();
+    return SD.open(path, FILE_READ);
+}
+
 bool SDStore::writeAtomic(const char* path, const uint8_t* data, size_t len) {
     unsigned long startMs = PerfTrace::nowMs();
     if (!_ready) {

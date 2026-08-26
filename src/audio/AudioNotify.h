@@ -15,6 +15,17 @@ public:
     void requestMessage();  // Defer short alert out of packet callbacks
     void loop();
 
+    // WAV playback — Mono PCM16 from SD. Loudness-normalized via gated-RMS +
+    // soft-knee 4:1. Returns true on successful start; the path was readable
+    // and the I2S driver accepted the data stream. The actual play completes
+    // asynchronously (this call blocks until the last sample is written).
+    bool playWav(const char* path);
+
+    // True when a valid WAV header is present (size > 44 bytes).
+    bool wavExists(const char* path);
+
+    static constexpr const char* kProbeWavPath = "/Files/voice/probe.wav";
+
     // Settings
     void setEnabled(bool enabled) { _enabled = enabled; }
     bool isEnabled() const { return _enabled; }

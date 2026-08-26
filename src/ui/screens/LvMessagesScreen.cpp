@@ -207,7 +207,8 @@ void LvMessagesScreen::rebuildList() {
         auto* s = _lxmf->getConversationSummary(ci.peerHex);
         if (s) {
             ci.lastTs = s->lastTimestamp;
-            ci.preview = chatPreviewText(s->lastPreview, 56);
+            std::string previewRaw = s->lastPreview;
+            ci.preview = chatPreviewText(previewRaw, 56);
             ci.lastIncoming = s->lastIncoming;
             ci.unreadCount = s->unreadCount;
             ci.totalCount = s->totalCount;

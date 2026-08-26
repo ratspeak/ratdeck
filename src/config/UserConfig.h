@@ -21,12 +21,28 @@ constexpr uint8_t BATTERY_DISPLAY_PERCENT = 0;
 constexpr uint8_t BATTERY_DISPLAY_BAR = 1;
 constexpr uint8_t BATTERY_MODEL_LIPO = 0;
 constexpr uint8_t BATTERY_MODEL_LINEAR = 1;
-constexpr float BATTERY_CHARGE_THRESHOLD_DEFAULT = 4.0f;
+// 4.18V, not the 4.2V absolute LiPo max - actively charging cells commonly
+// sit in the high-4.1/low-4.2 range well before topping out, so a threshold
+// right at 4.2 would misclassify a nearly-full charging cell as
+// "discharging". Previously 4.0f, which misclassified anything >=80% SoC as
+// actively charging even when just resting on battery.
+constexpr float BATTERY_CHARGE_THRESHOLD_DEFAULT = 4.18f;
 constexpr float BATTERY_FULL_VOLTAGE_DEFAULT = 3.9f;
 constexpr float BATTERY_CHARGE_THRESHOLD_MIN = 3.80f;
 constexpr float BATTERY_CHARGE_THRESHOLD_MAX = 4.30f;
 constexpr float BATTERY_FULL_VOLTAGE_MIN = 3.50f;
 constexpr float BATTERY_FULL_VOLTAGE_MAX = 4.20f;
+// ADC voltage-divider ratio for the battery-sense pin. Was hardcoded to
+// 2.0f in Power.cpp (matches the stock T-Deck Plus battery's sense-line
+// wiring) — aftermarket/extended battery packs can be wired through a
+// different physical divider network on their sense connection, which no
+// amount of curve/offset tuning (fullBatteryV, chargeThresholdV) can
+// correct, since those only reshape an already-correct voltage reading.
+// Derive the right value the same way as a multimeter-based ADC
+// calibration: measured_mv / (raw_computed_mv_at_2.0x_ratio) * 2.0.
+constexpr float BATTERY_ADC_DIVIDER_DEFAULT = 2.0f;
+constexpr float BATTERY_ADC_DIVIDER_MIN = 1.0f;
+constexpr float BATTERY_ADC_DIVIDER_MAX = 4.0f;
 
 struct TCPEndpoint {
     String host;
@@ -74,6 +90,7 @@ struct UserSettings {
     uint8_t batteryModel = BATTERY_MODEL_LIPO;
     float chargeThresholdV = BATTERY_CHARGE_THRESHOLD_DEFAULT;
     float fullBatteryV = BATTERY_FULL_VOLTAGE_DEFAULT;
+    float adcDividerRatio = BATTERY_ADC_DIVIDER_DEFAULT;
 
     // Keyboard
     uint8_t keyboardBrightness = 100; // Percentage 0-100 (0 = off)
@@ -89,12 +106,36 @@ struct UserSettings {
     // BLE
     bool bleEnabled = false;
 
-    // GPS & Time
+    // GPS & Time — defaults are ON for both time sync and location
+    // tracking. The legacy default was OFF for location; existing
+    // installs with `gps_location=false` stored in NVS will keep that
+    // explicit value (see UserConfig.cpp migration below — a one-time
+    // `gps_defaults_v2` marker is written on first load after the
+    // migration runs).
     bool gpsTimeEnabled = true;      // GPS time sync (default ON)
-    bool gpsLocationEnabled = false; // GPS position tracking (default OFF, user must opt in)
+    bool gpsLocationEnabled = true;  // GPS position tracking (default ON)
     uint8_t timezoneIdx = 6;         // Index into TIMEZONE_TABLE (default: New York EST/EDT)
     bool timezoneSet = false;        // false = show timezone picker at boot
     bool use24HourTime = false;      // false = 12h (no AM/PM), true = 24h
+
+    // GPS Telemetry (issue #64) — opt-in position sharing to a hub. Off by
+    // default per privacy requirement; user must explicitly enable AND have
+    // a working hub hash configured.
+    bool   gpsTelemetryEnabled = false;                                       // master opt-in switch, default OFF
+    String gpsTelemetryHubHash = "da424e0f47657d7575df58a2b83b111b";           // 32 hex chars, Lyra collector default
+    static constexpr size_t GPS_TELEMETRY_HUB_HASH_LEN = 32;
+    static constexpr const char* GPS_TELEMETRY_DEFAULT_HUB_HASH = "da424e0f47657d7575df58a2b83b111b";
+
+    // Periodic telemetry cadence (seconds). 0 = on-demand only (default):
+    // periodic sending must never silently start just because the user
+    // enabled "Send Telemetry"; the user must also pick a non-zero
+    // interval explicitly. Non-zero values are clamped to
+    // [GPS_TELEMETRY_INTERVAL_MIN_S, GPS_TELEMETRY_INTERVAL_MAX_S] by
+    // sanitizeSettings(). The 60 s minimum protects the LoRa channel
+    // from being hammered by a careless 1-second setting.
+    int gpsTelemetryIntervalS = 0;
+    static constexpr int GPS_TELEMETRY_INTERVAL_MIN_S = 60;        // 1 min floor
+    static constexpr int GPS_TELEMETRY_INTERVAL_MAX_S = 86400;     // 24 h ceiling
 
     // Audio
     bool audioEnabled = true;

@@ -8,6 +8,7 @@
 
 class LXMFManager;
 class AnnounceManager;
+class GPSManager;
 
 class LvMessageView : public LvScreen {
 public:
@@ -25,12 +26,18 @@ public:
     void setLXMFManager(LXMFManager* lxmf) { _lxmf = lxmf; }
     void setAnnounceManager(AnnounceManager* am) { _am = am; }
     void setUIManager(class UIManager* ui) { _ui = ui; }
+    void setGPSManager(GPSManager* gps) { _gps = gps; }
+    void setUserConfig(class UserConfig* cfg) { _cfg = cfg; }
     void setBackCallback(BackCallback cb) { _onBack = cb; }
 
     const char* title() const override { return "Chat"; }
 
 private:
     void sendCurrentMessage(bool viaLink = false);
+    // Send the current GPS fix as a `LOC lat lon` message to the active
+    // peer. Gates on: GPS has a fix, gpsLocationEnabled is on, the peer
+    // is a saved contact. Toasts failure reasons; never logs coords.
+    void sendGpsLocation();
     void rebuildMessages();
     void appendMessage(const LXMFMessage& msg);
     std::string getPeerName();
@@ -43,9 +50,17 @@ private:
     void hideSendModeMenu();
     void updateSendModeMenu();
     void chooseSendMode(int idx);
+    // True iff Send GPS is currently available (GPS fix, location on,
+    // saved contact). Drives both the menu visibility and the entry-cap.
+    bool canSendGps() const;
+    // Number of rows in the send-mode menu — 3 normally, 4 when Send GPS
+    // is available. Drives keyboard nav cap + overlay height.
+    int sendMenuEntryCount() const { return canSendGps() ? 4 : 3; }
 
     LXMFManager* _lxmf = nullptr;
     AnnounceManager* _am = nullptr;
+    GPSManager* _gps = nullptr;
+    class UserConfig* _cfg = nullptr;
     class UIManager* _ui = nullptr;
     BackCallback _onBack;
     std::string _peerHex;
@@ -67,10 +82,18 @@ private:
     lv_obj_t* _msgScroll = nullptr;
     lv_obj_t* _inputRow = nullptr;
     lv_obj_t* _textarea = nullptr;
+    // Send GPS pill — sits left of SEND in the composer row, like Pro
+    // Thread's GPS shortcut. Long-press of SEND still opens the legacy
+    // send-mode menu (including "Send as link"); this pill is the
+    // dedicated one-tap path for `LOC lat lon` so the user never has to
+    // rely on a long-press gesture that may not fire on resistive touch.
+    lv_obj_t* _btnGps = nullptr;
     lv_obj_t* _btnSend = nullptr;
     lv_obj_t* _sendOverlay = nullptr;
-    lv_obj_t* _sendRows[3] = {};
-    lv_obj_t* _sendLabels[3] = {};
+    // Send-mode menu — 4 rows when Send GPS is available, otherwise 3.
+    static constexpr int MAX_SEND_MENU_ENTRIES = 4;
+    lv_obj_t* _sendRows[MAX_SEND_MENU_ENTRIES] = {};
+    lv_obj_t* _sendLabels[MAX_SEND_MENU_ENTRIES] = {};
     int _sendMenuIdx = 0;
     bool _suppressNextSendClick = false;
 

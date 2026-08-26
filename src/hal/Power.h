@@ -26,6 +26,10 @@ public:
     void setBatteryModel(uint8_t model);  // 0=lipo, 1=linear
     void setChargeThreshold(float v);
     void setFullBatteryVoltage(float v);
+    void setAdcDividerRatio(float ratio);
+    float adcDividerRatio() const { return _adcDividerRatio; }
+    // Raw ADC reading on BAT_ADC_PIN, unscaled — for calibration only.
+    int batteryRawAdc() const;
 
     // Display backlight — accepts percentage 1-100
     void setBrightness(uint8_t percent);
@@ -69,6 +73,7 @@ private:
 
     // Battery
     uint8_t _batteryModel = 0;
-    float _chargeThreshold = 4.0f;
+    float _chargeThreshold = 4.18f;
     float _fullBatteryV = 3.9f;
+    float _adcDividerRatio = 2.0f;
 };
