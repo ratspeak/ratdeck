@@ -1,5 +1,6 @@
 #include "IdentityManager.h"
 #include "config/Config.h"
+#include "platform/CoreSync.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <Utilities/OS.h>
@@ -66,6 +67,7 @@ String IdentityManager::slotKeyPath(int slotNum) const {
 
 String IdentityManager::importIdentityPath() const {
     if (!_sd || !_sd->isReady()) return "";
+    CoreSync::SpiBusGuard busGuard;
     if (_sd->exists(SD_PATH_IMPORT_IDENTITY)) return String(SD_PATH_IMPORT_IDENTITY);
     if (_sd->exists(SD_PATH_IMPORT_ID)) return String(SD_PATH_IMPORT_ID);
 

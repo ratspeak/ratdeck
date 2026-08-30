@@ -1,6 +1,12 @@
 #include "SDStore.h"
 #include "config/Config.h"
 #include "util/PerfTrace.h"
+#include "platform/CoreSync.h"
+
+// Every runtime SD operation grabs the shared FSPI bus for its full duration.
+// The mutex is recursive, so nested helpers (writeString -> writeAtomic,
+// ensureDir recursion, formatForRsDeck -> ensureDir) lock safely. Boot-time
+// setup (begin) runs before the network task exists, so it needs no guard.
 
 bool SDStore::begin(SPIClass* spi, int csPin) {
     if (!spi) return false;
@@ -58,11 +64,12 @@ bool SDStore::begin(SPIClass* spi, int csPin) {
 
 void SDStore::end() { SD.end(); _ready = false; }
 
-uint64_t SDStore::totalBytes() const { return _ready ? SD.totalBytes() : 0; }
-uint64_t SDStore::usedBytes() const { return _ready ? SD.usedBytes() : 0; }
+uint64_t SDStore::totalBytes() const { CoreSync::SpiBusGuard g; return _ready ? SD.totalBytes() : 0; }
+uint64_t SDStore::usedBytes() const { CoreSync::SpiBusGuard g; return _ready ? SD.usedBytes() : 0; }
 
 bool SDStore::ensureDir(const char* path) {
     if (!_ready) return false;
+    CoreSync::SpiBusGuard busGuard;
     if (SD.exists(path)) return true;
     // Create parent directories recursively
     String pathStr = String(path);
@@ -76,14 +83,17 @@ bool SDStore::ensureDir(const char* path) {
     return SD.mkdir(path);
 }
 
-bool SDStore::exists(const char* path) { return _ready ? SD.exists(path) : false; }
-bool SDStore::remove(const char* path) { return _ready ? SD.remove(path) : false; }
-File SDStore::openDir(const char* path) { return _ready ? SD.open(path) : File(); }
-bool SDStore::removeDir(const char* path) { return _ready ? SD.rmdir(path) : false; }
+bool SDStore::exists(const char* path) { CoreSync::SpiBusGuard g; return _ready ? SD.exists(path) : false; }
+bool SDStore::remove(const char* path) { CoreSync::SpiBusGuard g; return _ready ? SD.remove(path) : false; }
+// NOTE: openDir only guards the open(); callers iterating the returned File must
+// hold their own CoreSync::SpiBusGuard around the open->read->close sequence.
+File SDStore::openDir(const char* path) { CoreSync::SpiBusGuard g; return _ready ? SD.open(path) : File(); }
+bool SDStore::removeDir(const char* path) { CoreSync::SpiBusGuard g; return _ready ? SD.rmdir(path) : false; }
 
 bool SDStore::readFile(const char* path, uint8_t* buffer, size_t maxLen, size_t& bytesRead) {
     bytesRead = 0;
     if (!_ready) return false;
+    CoreSync::SpiBusGuard busGuard;
     File f = SD.open(path, FILE_READ);
     if (!f) return false;
     size_t size = f.size();
@@ -99,6 +109,7 @@ bool SDStore::writeAtomic(const char* path, const uint8_t* data, size_t len) {
         PerfTrace::write("sd", "atomic", path, len, startMs, false);
         return false;
     }
+    CoreSync::SpiBusGuard busGuard;
 
     String tmpPath = String(path) + ".tmp";
     String bakPath = String(path) + ".bak";
@@ -154,6 +165,7 @@ bool SDStore::writeSimple(const char* path, const uint8_t* data, size_t len) {
         PerfTrace::write("sd", "simple", path, len, startMs, false);
         return false;
     }
+    CoreSync::SpiBusGuard busGuard;
 
     File f = SD.open(path, FILE_WRITE);
     if (!f) {
@@ -182,6 +194,7 @@ bool SDStore::writeString(const char* path, const String& data) {
 
 String SDStore::readString(const char* path) {
     if (!_ready) return "";
+    CoreSync::SpiBusGuard busGuard;
     File f = SD.open(path, FILE_READ);
     if (!f) {
         String bakPath = String(path) + ".bak";
@@ -195,6 +208,7 @@ String SDStore::readString(const char* path) {
 
 bool SDStore::wipeRsDeck() {
     if (!_ready) return false;
+    CoreSync::SpiBusGuard busGuard;  // spans the whole recursive wipeDir walk
     Serial.println("[SD] Wiping rsDeck legacy /ratdeck/ data ...");
     wipeDir("/ratdeck/messages");
     wipeDir("/ratdeck/contacts");
@@ -225,6 +239,7 @@ void SDStore::wipeDir(const char* path) {
 
 bool SDStore::hasExistingData() {
     if (!_ready) return false;
+    CoreSync::SpiBusGuard busGuard;
     if (SD.exists(SD_PATH_USER_CONFIG)) return true;
     if (SD.exists(SD_PATH_IDENTITY)) return true;
     File dir = SD.open("/ratdeck/messages");

@@ -4,6 +4,7 @@
 #include "ui/LvInput.h"
 #include "ui/LxmFaceAvatar.h"
 #include "ui/UIManager.h"
+#include "platform/CoreSync.h"
 #include "reticulum/AnnounceManager.h"
 #include <Arduino.h>
 #include <algorithm>
@@ -15,6 +16,13 @@ namespace {
 constexpr int kContactRowH = 38;
 constexpr int kContactAvatar = 32;
 constexpr int kContactTextX = 48;
+
+int findNodeIndexByHex(const std::vector<DiscoveredNode>& nodes, const std::string& hex) {
+    for (int i = 0; i < (int)nodes.size(); i++) {
+        if (nodes[i].hash.toHex() == hex) return i;
+    }
+    return -1;
+}
 
 unsigned long nodeAgeMs(const DiscoveredNode& node, unsigned long now) {
     if (node.lastSeen == 0 || now < node.lastSeen) return ULONG_MAX;
@@ -128,7 +136,13 @@ void LvContactsScreen::refreshUI() {
     if (!_am) return;
     unsigned long now = millis();
     int contacts = 0;
-    for (const auto& n : _am->nodes()) { if (n.saved) contacts++; }
+    {
+        CoreSync::RnsTryGuard backendGuard(0);
+        if (!backendGuard.held()) return;
+        for (const auto& node : _am->nodes()) {
+            if (node.saved) contacts++;
+        }
+    }
     if (contacts != _lastContactCount || now - _lastRebuild >= REBUILD_INTERVAL_MS) {
         rebuildList();
     }
@@ -136,13 +150,22 @@ void LvContactsScreen::refreshUI() {
 
 void LvContactsScreen::rebuildList() {
     if (!_am || !_list) return;
+
+    std::vector<DiscoveredNode> snapshot;
+    {
+        CoreSync::RnsTryGuard backendGuard(0);
+        if (!backendGuard.held()) return;
+        snapshot = _am->nodes();
+    }
+    _nodesSnapshot.swap(snapshot);
+
     _lastRebuild = millis();
     _contactIndices.clear();
 
     lv_obj_clean(_list);
     _avatarBuffers.clear();
 
-    const auto& nodes = _am->nodes();
+    const auto& nodes = _nodesSnapshot;
     for (int i = 0; i < (int)nodes.size(); i++) {
         if (nodes[i].saved) _contactIndices.push_back(i);
     }
@@ -228,9 +251,11 @@ void LvContactsScreen::rebuildList() {
         lv_obj_add_event_cb(row, [](lv_event_t* e) {
             auto* self = (LvContactsScreen*)lv_event_get_user_data(e);
             int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
-            if (idx < (int)self->_contactIndices.size() && self->_onSelect) {
+            if (idx >= 0 && idx < (int)self->_contactIndices.size() && self->_onSelect) {
                 int nodeIdx = self->_contactIndices[idx];
-                self->_onSelect(self->_am->nodes()[nodeIdx].hash.toHex());
+                if (nodeIdx >= 0 && nodeIdx < (int)self->_nodesSnapshot.size()) {
+                    self->_onSelect(self->_nodesSnapshot[nodeIdx].hash.toHex());
+                }
             }
         }, LV_EVENT_CLICKED, this);
 
@@ -289,8 +314,11 @@ bool LvContactsScreen::handleLongPress() {
     if (!_focusActive) return false;
     lv_obj_t* focused = lv_group_get_focused(LvInput::group());
     if (!focused) return false;
-    _deleteIdx = (int)(intptr_t)lv_obj_get_user_data(focused);
-    if (_deleteIdx < 0 || _deleteIdx >= (int)_contactIndices.size()) return false;
+    int deleteIdx = (int)(intptr_t)lv_obj_get_user_data(focused);
+    if (deleteIdx < 0 || deleteIdx >= (int)_contactIndices.size()) return false;
+    int nodeIdx = _contactIndices[deleteIdx];
+    if (nodeIdx < 0 || nodeIdx >= (int)_nodesSnapshot.size()) return false;
+    _deleteNodeHex = _nodesSnapshot[nodeIdx].hash.toHex();
     _confirmDelete = true;
     if (_ui) _ui->lvStatusBar().showToast("Remove? Enter=Remove Esc=Keep", 5000);
     return true;
@@ -308,18 +336,20 @@ bool LvContactsScreen::handleKey(const KeyEvent& event) {
 
     if (_confirmDelete) {
         if (event.enter || event.character == '\n' || event.character == '\r') {
-            if (_deleteIdx >= 0 && _deleteIdx < (int)_contactIndices.size()) {
-                int nodeIdx = _contactIndices[_deleteIdx];
-                if (nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size()) {
-                    _am->deleteContact(nodeIdx);
-                    if (_ui) _ui->lvStatusBar().showToast("Contact removed", 1200);
-                    rebuildList();
-                }
+            bool removed = false;
+            {
+                CoreSync::RnsGuard backendGuard;
+                int nodeIdx = findNodeIndexByHex(_am->nodes(), _deleteNodeHex);
+                removed = nodeIdx >= 0 && _am->deleteContact(nodeIdx);
             }
+            if (removed && _ui) _ui->lvStatusBar().showToast("Contact removed", 1200);
             _confirmDelete = false;
+            _deleteNodeHex.clear();
+            if (removed) rebuildList();
             return true;
         }
         _confirmDelete = false;
+        _deleteNodeHex.clear();
         if (_ui) _ui->lvStatusBar().showToast("Kept contact", 800);
         return true;
     }

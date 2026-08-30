@@ -3,6 +3,7 @@
 #include "ui/LvTheme.h"
 #include "ui/LvInput.h"
 #include "ui/LxmFaceAvatar.h"
+#include "platform/CoreSync.h"
 #include "reticulum/ReticulumManager.h"
 #include "reticulum/LXMFManager.h"
 #include "reticulum/AnnounceManager.h"
@@ -273,6 +274,9 @@ void LvHomeScreen::onEnter() {
 
 void LvHomeScreen::refreshUI() {
     if (!_lblName) return;
+
+    CoreSync::RnsTryGuard backendGuard(0);
+    if (!backendGuard.held()) return;
 
     unsigned long now = millis();
     bool force = (_lastUptime == ULONG_MAX || _lastHeap == UINT32_MAX);

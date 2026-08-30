@@ -4,6 +4,7 @@
 #include "ui/LvInput.h"
 #include "ui/UIManager.h"
 #include "ui/LxmFaceAvatar.h"
+#include "platform/CoreSync.h"
 #include "reticulum/LXMFManager.h"
 #include "reticulum/AnnounceManager.h"
 #include "storage/MessageStore.h"
@@ -163,28 +164,72 @@ void LvMessagesScreen::onExit() {
 void LvMessagesScreen::refreshUI() {
     if (!_lxmf) return;
     if (_lpState != LP_NONE) return;
-    int count = (int)_lxmf->conversations().size();
-    int unread = _lxmf->unreadCount();
-    int queued = _lxmf->queuedCount();
-    uint32_t revision = _lxmf->storeRevision();
-    if (count != _lastConvCount || unread != _lastUnreadTotal ||
-        queued != _lastQueuedCount || revision != _lastStoreRevision) {
-        rebuildList();
+    bool changed;
+    {
+        CoreSync::RnsTryGuard backendGuard(0);
+        if (!backendGuard.held()) return;
+        int count = (int)_lxmf->conversations().size();
+        int unread = _lxmf->unreadCount();
+        int queued = _lxmf->queuedCount();
+        uint32_t revision = _lxmf->storeRevision();
+        changed = count != _lastConvCount || unread != _lastUnreadTotal ||
+            queued != _lastQueuedCount || revision != _lastStoreRevision;
     }
+    if (changed) rebuildList();
 }
 
 void LvMessagesScreen::rebuildList() {
     if (!_lxmf || !_list) return;
     unsigned long startMs = millis();
+    int count = 0;
 
-    const auto& convs = _lxmf->conversations();
-    int count = (int)convs.size();
-    _lastConvCount = count;
-    _lastUnreadTotal = _lxmf->unreadCount();
-    _lastQueuedCount = _lxmf->queuedCount();
-    _lastStoreRevision = _lxmf->storeRevision();
-    _sortedPeers.clear();
-    _sortedConvs.clear();
+    {
+        CoreSync::RnsTryGuard backendGuard(0);
+        if (!backendGuard.held()) return;
+
+        const auto& convs = _lxmf->conversations();
+        count = (int)convs.size();
+        _lastConvCount = count;
+        _lastUnreadTotal = _lxmf->unreadCount();
+        _lastQueuedCount = _lxmf->queuedCount();
+        _lastStoreRevision = _lxmf->storeRevision();
+        _sortedPeers.clear();
+        _sortedConvs.clear();
+        _sortedConvs.reserve(count);
+
+        for (int i = 0; i < count; i++) {
+            ConvInfo ci;
+            ci.peerHex = convs[i];
+            auto* summary = _lxmf->getConversationSummary(ci.peerHex);
+            if (summary) {
+                ci.lastTs = summary->lastTimestamp;
+                ci.preview = chatPreviewText(summary->lastPreview, 56);
+                ci.lastIncoming = summary->lastIncoming;
+                ci.unreadCount = summary->unreadCount;
+                ci.totalCount = summary->totalCount;
+                ci.hasUnread = ci.unreadCount > 0;
+                ci.hasOutgoing = summary->hasOutgoing;
+                ci.hasPending = summary->hasPending;
+                ci.hasFailed = summary->hasFailed;
+                ci.lastOutgoingStatus = summary->lastOutgoingStatus;
+            }
+            ci.displayName = displayNameForPeer(_am, ci.peerHex);
+
+            if (_am) {
+                const DiscoveredNode* node = _am->findNodeByHex(ci.peerHex);
+                if (node) {
+                    ci.knownNode = true;
+                    ci.savedNode = node->saved;
+                    ci.rssi = node->rssi;
+                    ci.snr = node->snr;
+                    ci.hops = node->hops;
+                    ci.lastSeen = node->lastSeen;
+                }
+            }
+
+            _sortedConvs.push_back(ci);
+        }
+    }
 
     lv_obj_clean(_list);
     _avatarBuffers.clear();
@@ -198,41 +243,7 @@ void LvMessagesScreen::rebuildList() {
     lv_obj_add_flag(_lblEmpty, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(_list, LV_OBJ_FLAG_HIDDEN);
 
-    // Build sorted conversation info
-    _sortedConvs.reserve(count);
     _avatarBuffers.reserve(count);
-    for (int i = 0; i < count; i++) {
-        ConvInfo ci;
-        ci.peerHex = convs[i];
-        auto* s = _lxmf->getConversationSummary(ci.peerHex);
-        if (s) {
-            ci.lastTs = s->lastTimestamp;
-            ci.preview = chatPreviewText(s->lastPreview, 56);
-            ci.lastIncoming = s->lastIncoming;
-            ci.unreadCount = s->unreadCount;
-            ci.totalCount = s->totalCount;
-            ci.hasUnread = ci.unreadCount > 0;
-            ci.hasOutgoing = s->hasOutgoing;
-            ci.hasPending = s->hasPending;
-            ci.hasFailed = s->hasFailed;
-            ci.lastOutgoingStatus = s->lastOutgoingStatus;
-        }
-        ci.displayName = displayNameForPeer(_am, ci.peerHex);
-
-        if (_am) {
-            const DiscoveredNode* node = _am->findNodeByHex(ci.peerHex);
-            if (node) {
-                ci.knownNode = true;
-                ci.savedNode = node->saved;
-                ci.rssi = node->rssi;
-                ci.snr = node->snr;
-                ci.hops = node->hops;
-                ci.lastSeen = node->lastSeen;
-            }
-        }
-
-        _sortedConvs.push_back(ci);
-    }
 
     std::sort(_sortedConvs.begin(), _sortedConvs.end(), [](const ConvInfo& a, const ConvInfo& b) {
         return a.lastTs > b.lastTs;
@@ -490,16 +501,26 @@ void LvMessagesScreen::showDeleteConfirm() {
 void LvMessagesScreen::addFocusedPeerToContacts() {
     if (!_am || _lpPeerIdx < 0 || _lpPeerIdx >= (int)_sortedPeers.size()) return;
     const auto& peerHex = _sortedPeers[_lpPeerIdx];
-    const DiscoveredNode* existing = _am->findNodeByHex(peerHex);
-    if (existing && !existing->saved) {
-        auto& node = const_cast<DiscoveredNode&>(*existing);
-        node.saved = true;
-        _am->saveContacts();
+    bool added = false;
+    bool alreadySaved = false;
+    {
+        CoreSync::RnsGuard backendGuard;
+        const DiscoveredNode* existing = _am->findNodeByHex(peerHex);
+        if (existing && !existing->saved) {
+            auto& node = const_cast<DiscoveredNode&>(*existing);
+            node.saved = true;
+            _am->saveContacts();
+            added = true;
+        } else if (!existing) {
+            _am->addManualContact(peerHex, "");
+            added = true;
+        } else {
+            alreadySaved = true;
+        }
+    }
+    if (added) {
         if (_ui) _ui->lvStatusBar().showToast("Added to friends", 1200);
-    } else if (!existing) {
-        _am->addManualContact(peerHex, "");
-        if (_ui) _ui->lvStatusBar().showToast("Added to friends", 1200);
-    } else if (_ui) {
+    } else if (alreadySaved && _ui) {
         _ui->lvStatusBar().showToast("Already a friend", 1200);
     }
 }
@@ -507,11 +528,16 @@ void LvMessagesScreen::addFocusedPeerToContacts() {
 void LvMessagesScreen::deleteFocusedConversation() {
     if (!_lxmf || _lpPeerIdx < 0 || _lpPeerIdx >= (int)_sortedPeers.size()) return;
     const auto& peerHex = _sortedPeers[_lpPeerIdx];
-    _lxmf->markRead(peerHex);
-    _lxmf->deleteConversation(peerHex);
+    int unread = 0;
+    {
+        CoreSync::RnsGuard backendGuard;
+        _lxmf->markRead(peerHex);
+        _lxmf->deleteConversation(peerHex);
+        unread = _lxmf->unreadCount();
+    }
     if (_ui) {
         _ui->lvStatusBar().showToast("Chat deleted", 1200);
-        _ui->lvTabBar().setUnreadCount(LvTabBar::TAB_MSGS, _lxmf->unreadCount());
+        _ui->lvTabBar().setUnreadCount(LvTabBar::TAB_MSGS, unread);
     }
     _lastConvCount = -1;
     rebuildList();

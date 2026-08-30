@@ -1,11 +1,11 @@
 #pragma once
 
 #include "ui/UIManager.h"
+#include "reticulum/AnnounceManager.h"
 #include <functional>
 #include <string>
 #include <vector>
 
-class AnnounceManager;
 class UserConfig;
 
 class LvNodesScreen : public LvScreen {
@@ -30,6 +30,11 @@ private:
     void rebuildList();
     int getFocusedNodeIdx() const;
 
+    // Filter input helpers
+    bool isFilterFocused() const;
+    void updateFilterDisplay();
+    bool matchesFilter(const DiscoveredNode& node) const;
+
     // Action modal helpers
     enum class NodeAction { BROWSE, ACTION_MENU, NICKNAME_INPUT };
     void showActionMenu(int nodeIdx);
@@ -49,7 +54,7 @@ private:
     // Action modal state
     NodeAction _actionState = NodeAction::BROWSE;
     int _menuIdx = 0;
-    int _actionNodeIdx = -1;
+    std::string _actionNodeHex;
     String _nicknameText;
 
     // Overlay widgets
@@ -65,7 +70,8 @@ private:
     int _lastNodeCount = -1;
     int _lastContactCount = -1;
 
-    // Sorted index vectors (into _am->nodes())
+    // UI-owned snapshot and sorted indices into it.
+    std::vector<DiscoveredNode> _nodesSnapshot;
     std::vector<int> _sortedContactIndices;
     std::vector<int> _sortedOnlineIndices;
 
@@ -75,4 +81,11 @@ private:
 
     lv_obj_t* _list = nullptr;
     lv_obj_t* _emptyState = nullptr;
+    lv_obj_t* _emptyTitle = nullptr;
+    lv_obj_t* _emptyHint = nullptr;
+
+    // Filter bar — fixed above the list, first object in the focus group
+    lv_obj_t* _filterBar = nullptr;
+    lv_obj_t* _filterLbl = nullptr;
+    String _filterText;
 };

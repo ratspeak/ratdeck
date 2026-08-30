@@ -1,5 +1,6 @@
 #include "Display.h"
 #include <lvgl.h>
+#include "../platform/CoreSync.h"
 
 // Double-buffered 10-line strips in PSRAM for DMA flush
 static lv_color_t* s_buf1 = nullptr;
@@ -9,6 +10,10 @@ static LGFX_TDeck* s_gfx = nullptr;
 static void lvgl_flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
     uint32_t w = area->x2 - area->x1 + 1;
     uint32_t h = area->y2 - area->y1 + 1;
+    // Hold the shared FSPI bus for the whole strip write. In the single-threaded
+    // build this is a no-op; under RSDECK_UI_CORE_SPLIT it keeps the flush from
+    // interleaving with an SX1262/SD transaction driven by the network core.
+    CoreSync::SpiBusGuard busGuard;
     s_gfx->startWrite();
     s_gfx->setAddrWindow(area->x1, area->y1, w, h);
     // Blocking pushPixels prevents SPI bus contention with SX1262 radio on shared FSPI bus
@@ -68,9 +73,11 @@ void Display::setBrightness(uint8_t level) {
 }
 
 void Display::sleep() {
+    CoreSync::SpiBusGuard busGuard;
     _gfx.sleep();
 }
 
 void Display::wakeup() {
+    CoreSync::SpiBusGuard busGuard;
     _gfx.wakeup();
 }

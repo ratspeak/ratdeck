@@ -3,6 +3,7 @@
 #include "ui/LvTheme.h"
 #include "ui/LvInput.h"
 #include "ui/UIManager.h"
+#include "platform/CoreSync.h"
 #include "reticulum/AnnounceManager.h"
 #include "config/UserConfig.h"
 #include <Arduino.h>
@@ -14,6 +15,16 @@ namespace {
 
 constexpr int kPeerRowH = 36;
 constexpr int kPeerHeaderH = 20;
+constexpr int kFilterBarH = 22;
+constexpr int kFilterMaxLen = 24;
+
+int findNodeIndexByHex(const std::vector<DiscoveredNode>& nodes, const std::string& hex) {
+    for (int i = 0; i < (int)nodes.size(); i++) {
+        if (nodes[i].hash.toHex() == hex) return i;
+    }
+    return -1;
+}
+
 unsigned long nodeAgeMs(const DiscoveredNode& node, unsigned long now) {
     if (node.lastSeen == 0 || now < node.lastSeen) return ULONG_MAX;
     return now - node.lastSeen;
@@ -58,7 +69,7 @@ std::string peerMetaFor(const DiscoveredNode& node, unsigned long ageMs, bool de
     return meta;
 }
 
-lv_obj_t* createEmptyState(lv_obj_t* parent) {
+lv_obj_t* createEmptyState(lv_obj_t* parent, lv_obj_t** outTitle, lv_obj_t** outHint) {
     lv_obj_t* box = lv_obj_create(parent);
     lv_obj_set_size(box, 252, 94);
     lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
@@ -91,6 +102,8 @@ lv_obj_t* createEmptyState(lv_obj_t* parent) {
     lv_label_set_text(hint, "Listening for announces");
     lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 55);
 
+    if (outTitle) *outTitle = title;
+    if (outHint) *outHint = hint;
     return box;
 }
 
@@ -101,10 +114,48 @@ void LvNodesScreen::createUI(lv_obj_t* parent) {
     lv_obj_set_style_bg_color(parent, lv_color_hex(Theme::BG), 0);
     lv_obj_set_style_pad_all(parent, 0, 0);
 
-    _emptyState = createEmptyState(parent);
+    _emptyState = createEmptyState(parent, &_emptyTitle, &_emptyHint);
+
+    // --- Filter input: fixed above the list so it stays visible while scrolling.
+    // Kept outside _list because rebuildList() cleans that container on every
+    // keystroke; as the first object added to the focus group it is also the
+    // natural "up from the top row" target.
+    _filterBar = lv_obj_create(parent);
+    lv_obj_set_size(_filterBar, Theme::CONTENT_W, kFilterBarH);
+    lv_obj_set_pos(_filterBar, 0, 0);
+    lv_obj_add_style(_filterBar, LvTheme::styleTextarea(), 0);
+    lv_obj_add_style(_filterBar, LvTheme::styleTextareaFocused(), LV_STATE_FOCUSED);
+    lv_obj_set_style_radius(_filterBar, 0, 0);
+    lv_obj_set_style_pad_all(_filterBar, 0, 0);
+    lv_obj_set_style_border_side(_filterBar, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_width(_filterBar, 1, 0);
+    lv_obj_clear_flag(_filterBar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(_filterBar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_user_data(_filterBar, (void*)(intptr_t)-1);
+
+    _filterLbl = lv_label_create(_filterBar);
+    lv_obj_set_style_text_font(_filterLbl, &lv_font_rsdeck_12, 0);
+    lv_label_set_long_mode(_filterLbl, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(_filterLbl, Theme::CONTENT_W - 16);
+    lv_obj_set_pos(_filterLbl, 8, 3);
+
+    lv_group_add_obj(LvInput::group(), _filterBar);
+    lv_obj_add_event_cb(_filterBar, [](lv_event_t* e) {
+        auto* self = (LvNodesScreen*)lv_event_get_user_data(e);
+        self->_focusActive = true;
+        lv_group_focus_obj(lv_event_get_target(e));
+    }, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(_filterBar, [](lv_event_t* e) {
+        ((LvNodesScreen*)lv_event_get_user_data(e))->updateFilterDisplay();
+    }, LV_EVENT_FOCUSED, this);
+    lv_obj_add_event_cb(_filterBar, [](lv_event_t* e) {
+        ((LvNodesScreen*)lv_event_get_user_data(e))->updateFilterDisplay();
+    }, LV_EVENT_DEFOCUSED, this);
+    updateFilterDisplay();
 
     _list = lv_obj_create(parent);
-    lv_obj_set_size(_list, lv_pct(100), lv_pct(100));
+    lv_obj_set_size(_list, lv_pct(100), Theme::CONTENT_H - kFilterBarH);
+    lv_obj_set_pos(_list, 0, kFilterBarH);
     lv_obj_add_style(_list, LvTheme::styleList(), 0);
     lv_obj_set_layout(_list, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(_list, LV_FLEX_FLOW_COLUMN);
@@ -211,6 +262,9 @@ void LvNodesScreen::destroyUI() {
     _overlayTitle = nullptr; _overlayMeta = nullptr; _overlayReach = nullptr;
     _nicknameBox = nullptr; _nicknameLbl = nullptr; _nicknameHint = nullptr;
     _list = nullptr; _emptyState = nullptr;
+    _emptyTitle = nullptr; _emptyHint = nullptr;
+    _filterBar = nullptr; _filterLbl = nullptr;
+    _nodesSnapshot.clear();
     LvScreen::destroyUI();
 }
 
@@ -219,8 +273,42 @@ void LvNodesScreen::onEnter() {
     _lastContactCount = -1;
     _focusActive = false;
     _confirmDelete = false;
+    // Start unfiltered: this is a live discovery view, and a filter carried over
+    // from a previous visit would silently hide newly announced peers.
+    _filterText = "";
+    updateFilterDisplay();
     hideOverlay();
     rebuildList();
+}
+
+bool LvNodesScreen::isFilterFocused() const {
+    return _filterBar && lv_group_get_focused(LvInput::group()) == _filterBar;
+}
+
+void LvNodesScreen::updateFilterDisplay() {
+    if (!_filterLbl) return;
+    bool focused = isFilterFocused();
+    if (_filterText.isEmpty()) {
+        lv_obj_set_style_text_color(_filterLbl, lv_color_hex(Theme::TEXT_MUTED), 0);
+        lv_label_set_text(_filterLbl, focused ? "Filter: _" : "Filter peers");
+    } else {
+        String shown = "Filter: " + _filterText;
+        if (focused) shown += "_";
+        lv_obj_set_style_text_color(_filterLbl, lv_color_hex(Theme::PRIMARY), 0);
+        lv_label_set_text(_filterLbl, shown.c_str());
+    }
+}
+
+bool LvNodesScreen::matchesFilter(const DiscoveredNode& node) const {
+    if (_filterText.isEmpty()) return true;
+    String needle = _filterText;
+    needle.toLowerCase();
+    String name = displayNameFor(node).c_str();
+    name.toLowerCase();
+    if (name.indexOf(needle) >= 0) return true;
+    String hex = node.hash.toHex().c_str();
+    hex.toLowerCase();
+    return hex.indexOf(needle) >= 0;
 }
 
 void LvNodesScreen::refreshUI() {
@@ -228,8 +316,17 @@ void LvNodesScreen::refreshUI() {
     unsigned long now = millis();
     if (now - _lastRebuild < REBUILD_INTERVAL_MS) return;
     int contacts = 0;
-    for (const auto& n : _am->nodes()) { if (n.saved) contacts++; }
-    int countDelta = abs(_am->nodeCount() - _lastNodeCount);
+    int nodeCount = 0;
+    {
+        CoreSync::RnsTryGuard backendGuard(0);
+        if (!backendGuard.held()) return;
+        const auto& nodes = _am->nodes();
+        nodeCount = (int)nodes.size();
+        for (const auto& node : nodes) {
+            if (node.saved) contacts++;
+        }
+    }
+    int countDelta = abs(nodeCount - _lastNodeCount);
     int contactDelta = abs(contacts - _lastContactCount);
     bool ageRefresh = now - _lastRebuild >= AGE_REBUILD_INTERVAL_MS;
     if (countDelta > 0 || contactDelta > 0 || ageRefresh) {
@@ -240,6 +337,15 @@ void LvNodesScreen::refreshUI() {
 
 void LvNodesScreen::rebuildList() {
     if (!_am || !_list) return;
+
+    std::vector<DiscoveredNode> snapshot;
+    {
+        CoreSync::RnsTryGuard backendGuard(0);
+        if (!backendGuard.held()) return;
+        snapshot = _am->nodes();
+    }
+    _nodesSnapshot.swap(snapshot);
+
     _lastRebuild = millis();
     // Preserve scroll position across rebuilds
     lv_coord_t scrollY = lv_obj_get_scroll_y(_list);
@@ -247,16 +353,21 @@ void LvNodesScreen::rebuildList() {
     _sortedContactIndices.clear();
     _sortedOnlineIndices.clear();
 
-    const auto& nodes = _am->nodes();
+    const auto& nodes = _nodesSnapshot;
     int count = (int)nodes.size();
     _lastNodeCount = count;
     unsigned long now = millis();
 
+    int savedTotal = 0;
     for (int i = 0; i < count; i++) {
+        if (nodes[i].saved) savedTotal++;
+        if (!matchesFilter(nodes[i])) continue;
         if (nodes[i].saved) _sortedContactIndices.push_back(i);
         else _sortedOnlineIndices.push_back(i);
     }
-    _lastContactCount = (int)_sortedContactIndices.size();
+    // Track the unfiltered saved count so refreshUI() compares like with like —
+    // otherwise an active filter reads as a contact-count delta on every tick.
+    _lastContactCount = savedTotal;
 
     std::sort(_sortedContactIndices.begin(), _sortedContactIndices.end(), [&nodes, now](int a, int b) {
         unsigned long ageA = nodeAgeMs(nodes[a], now);
@@ -273,6 +384,10 @@ void LvNodesScreen::rebuildList() {
     });
 
     if (_sortedContactIndices.empty() && _sortedOnlineIndices.empty()) {
+        bool filtered = !_filterText.isEmpty();
+        if (_emptyTitle) lv_label_set_text(_emptyTitle, filtered ? "No peers match" : "No peers heard");
+        if (_emptyHint) lv_label_set_text(_emptyHint, filtered ? "Esc clears the filter"
+                                                              : "Listening for announces");
         if (_emptyState) lv_obj_clear_flag(_emptyState, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(_list, LV_OBJ_FLAG_HIDDEN);
         return;
@@ -316,7 +431,7 @@ void LvNodesScreen::rebuildList() {
         lv_obj_add_event_cb(row, [](lv_event_t* e) {
             auto* self = (LvNodesScreen*)lv_event_get_user_data(e);
             int idx = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
-            if (idx >= 0 && idx < (int)self->_am->nodes().size()) {
+            if (idx >= 0 && idx < (int)self->_nodesSnapshot.size()) {
                 self->showActionMenu(idx);
             }
         }, LV_EVENT_CLICKED, this);
@@ -386,7 +501,7 @@ void LvNodesScreen::rebuildList() {
 
 int LvNodesScreen::getFocusedNodeIdx() const {
     lv_obj_t* focused = lv_group_get_focused(LvInput::group());
-    if (!focused) return -1;
+    if (!focused || focused == _filterBar) return -1;
     return (int)(intptr_t)lv_obj_get_user_data(focused);
 }
 
@@ -395,14 +510,15 @@ int LvNodesScreen::getFocusedNodeIdx() const {
 void LvNodesScreen::updateOverlayDetails(const char* title) {
     if (!_overlayTitle || !_overlayMeta || !_overlayReach) return;
 
-    if (!_am || _actionNodeIdx < 0 || _actionNodeIdx >= (int)_am->nodes().size()) {
+    int nodeIdx = findNodeIndexByHex(_nodesSnapshot, _actionNodeHex);
+    if (nodeIdx < 0) {
         lv_label_set_text(_overlayTitle, title ? title : "Peer");
         lv_label_set_text(_overlayMeta, "ID: unavailable");
         lv_label_set_text(_overlayReach, "No route data");
         return;
     }
 
-    const auto& node = _am->nodes()[_actionNodeIdx];
+    const auto& node = _nodesSnapshot[nodeIdx];
     unsigned long age = nodeAgeMs(node, millis());
     bool devMode = _cfg && _cfg->settings().devMode;
 
@@ -419,36 +535,35 @@ void LvNodesScreen::updateOverlayDetails(const char* title) {
 }
 
 void LvNodesScreen::showActionMenu(int nodeIdx) {
-    _actionNodeIdx = nodeIdx;
+    if (!_overlay || nodeIdx < 0 || nodeIdx >= (int)_nodesSnapshot.size()) return;
+
+    const auto& node = _nodesSnapshot[nodeIdx];
+    _actionNodeHex = node.hash.toHex();
     _menuIdx = 0;
     _actionState = NodeAction::ACTION_MENU;
     _nicknameText = "";
-    if (_overlay) {
-        if (_am && nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size()) {
-            bool isSaved = _am->nodes()[nodeIdx].saved;
-            lv_label_set_text(_menuLabels[0], isSaved ? "Edit Name" : "Save Contact");
-            lv_label_set_text(_menuLabels[1], "Message");
-            lv_label_set_text(_menuLabels[2], "Close");
-        }
-        updateOverlayDetails(nullptr);
-        for (int i = 0; i < 3; i++) lv_obj_clear_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(_nicknameBox, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(_overlay, LV_OBJ_FLAG_HIDDEN);
-        updateMenuSelection();
-    }
+    lv_label_set_text(_menuLabels[0], node.saved ? "Edit Name" : "Save Contact");
+    lv_label_set_text(_menuLabels[1], "Message");
+    lv_label_set_text(_menuLabels[2], "Close");
+    updateOverlayDetails(nullptr);
+    for (int i = 0; i < 3; i++) lv_obj_clear_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(_nicknameBox, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(_overlay, LV_OBJ_FLAG_HIDDEN);
+    updateMenuSelection();
 }
 
 void LvNodesScreen::hideOverlay() {
     _actionState = NodeAction::BROWSE;
-    _actionNodeIdx = -1;
+    _actionNodeHex.clear();
     _nicknameText = "";
     if (_overlay) lv_obj_add_flag(_overlay, LV_OBJ_FLAG_HIDDEN);
 }
 
 void LvNodesScreen::showNicknameInput() {
     _actionState = NodeAction::NICKNAME_INPUT;
-    if (_am && _actionNodeIdx >= 0 && _actionNodeIdx < (int)_am->nodes().size()) {
-        _nicknameText = String(_am->nodes()[_actionNodeIdx].name.c_str());
+    int nodeIdx = findNodeIndexByHex(_nodesSnapshot, _actionNodeHex);
+    if (nodeIdx >= 0) {
+        _nicknameText = String(_nodesSnapshot[nodeIdx].name.c_str());
     }
     updateOverlayDetails("Set contact name");
     for (int i = 0; i < 3; i++) lv_obj_add_flag(_menuBtns[i], LV_OBJ_FLAG_HIDDEN);
@@ -481,11 +596,11 @@ bool LvNodesScreen::handleLongPress() {
     // the list. Otherwise let main.cpp blank the screen.
     if (!_focusActive) return false;
     int nodeIdx = getFocusedNodeIdx();
-    if (nodeIdx < 0 || nodeIdx >= (int)_am->nodes().size()) return false;
-    const auto& node = _am->nodes()[nodeIdx];
+    if (nodeIdx < 0 || nodeIdx >= (int)_nodesSnapshot.size()) return false;
+    const auto& node = _nodesSnapshot[nodeIdx];
     if (node.saved) {
         _confirmDelete = true;
-        _actionNodeIdx = nodeIdx;
+        _actionNodeHex = node.hash.toHex();
         if (_ui) _ui->lvStatusBar().showToast("Remove? Enter=Remove Esc=Keep", 5000);
     } else {
         showActionMenu(nodeIdx);
@@ -508,17 +623,25 @@ bool LvNodesScreen::handleKey(const KeyEvent& event) {
     // --- Nickname input mode ---
     if (_actionState == NodeAction::NICKNAME_INPUT) {
         if (event.enter || event.character == '\n' || event.character == '\r') {
-            if (_actionNodeIdx >= 0 && _actionNodeIdx < (int)_am->nodes().size()) {
-                auto& node = const_cast<DiscoveredNode&>(_am->nodes()[_actionNodeIdx]);
-                String finalName = _nicknameText;
-                finalName.trim();
-                if (finalName.isEmpty()) {
-                    if (!node.name.empty()) finalName = String(node.name.c_str());
-                    else finalName = String(node.hash.toHex().substr(0, 12).c_str());
+            bool saved = false;
+            {
+                CoreSync::RnsGuard backendGuard;
+                int nodeIdx = findNodeIndexByHex(_am->nodes(), _actionNodeHex);
+                if (nodeIdx >= 0) {
+                    auto& node = const_cast<DiscoveredNode&>(_am->nodes()[nodeIdx]);
+                    String finalName = _nicknameText;
+                    finalName.trim();
+                    if (finalName.isEmpty()) {
+                        if (!node.name.empty()) finalName = String(node.name.c_str());
+                        else finalName = String(node.hash.toHex().substr(0, 12).c_str());
+                    }
+                    node.name = finalName.c_str();
+                    node.saved = true;
+                    _am->saveContacts();
+                    saved = true;
                 }
-                node.name = finalName.c_str();
-                node.saved = true;
-                _am->saveContacts();
+            }
+            if (saved) {
                 if (_ui) _ui->lvStatusBar().showToast("Contact saved", 1200);
                 hideOverlay();
                 rebuildList();
@@ -557,8 +680,8 @@ bool LvNodesScreen::handleKey(const KeyEvent& event) {
                     showNicknameInput();
                     break;
                 case 1:
-                    if (_actionNodeIdx >= 0 && _actionNodeIdx < (int)_am->nodes().size() && _onSelect) {
-                        std::string hex = _am->nodes()[_actionNodeIdx].hash.toHex();
+                    if (!_actionNodeHex.empty() && _onSelect) {
+                        std::string hex = _actionNodeHex;
                         hideOverlay();
                         _onSelect(hex);
                     } else {
@@ -578,27 +701,77 @@ bool LvNodesScreen::handleKey(const KeyEvent& event) {
     // --- Confirm delete mode ---
     if (_confirmDelete) {
         if (event.enter || event.character == '\n' || event.character == '\r') {
-            if (_actionNodeIdx >= 0 && _actionNodeIdx < (int)_am->nodes().size()) {
-                _am->deleteContact(_actionNodeIdx);
+            bool removed = false;
+            {
+                CoreSync::RnsGuard backendGuard;
+                int nodeIdx = findNodeIndexByHex(_am->nodes(), _actionNodeHex);
+                removed = nodeIdx >= 0 && _am->deleteContact(nodeIdx);
+            }
+            if (removed) {
                 if (_ui) _ui->lvStatusBar().showToast("Contact removed", 1200);
                 rebuildList();
             }
             _confirmDelete = false;
+            _actionNodeHex.clear();
             return true;
         }
         _confirmDelete = false;
+        _actionNodeHex.clear();
         if (_ui) _ui->lvStatusBar().showToast("Kept contact", 800);
         return true;
+    }
+
+    // --- Filter input mode (filter bar holds focus) ---
+    // Sits ahead of the 's' shortcut so letters typed here reach the filter
+    // instead of toggling a contact. Up/down fall through to the focus group.
+    if (isFilterFocused()) {
+        if (event.enter || event.character == '\n' || event.character == '\r') {
+            lv_group_focus_next(LvInput::group());  // jump into the filtered list
+            return true;
+        }
+        if (event.character == 0x1B) {
+            if (_filterText.isEmpty()) return false;  // let Esc bubble up
+            _filterText = "";
+            updateFilterDisplay();
+            rebuildList();
+            return true;
+        }
+        if (event.character == '\b' || event.character == 0x7F) {
+            if (_filterText.length() > 0) {
+                _filterText.remove(_filterText.length() - 1);
+                updateFilterDisplay();
+                rebuildList();
+            }
+            return true;
+        }
+        if (event.character >= 0x20 && event.character <= 0x7E) {
+            if ((int)_filterText.length() < kFilterMaxLen) {
+                _filterText += (char)event.character;
+                updateFilterDisplay();
+                rebuildList();
+            }
+            return true;
+        }
+        return false;
     }
 
     // 's' or 'S' to save/unsave contact
     if (event.character == 's' || event.character == 'S') {
         int nodeIdx = getFocusedNodeIdx();
-        if (nodeIdx >= 0 && nodeIdx < (int)_am->nodes().size()) {
-            auto& node = const_cast<DiscoveredNode&>(_am->nodes()[nodeIdx]);
-            node.saved = !node.saved;
-            if (node.saved) _am->saveContacts();
-            rebuildList();
+        if (nodeIdx >= 0 && nodeIdx < (int)_nodesSnapshot.size()) {
+            std::string nodeHex = _nodesSnapshot[nodeIdx].hash.toHex();
+            bool changed = false;
+            {
+                CoreSync::RnsGuard backendGuard;
+                int liveIdx = findNodeIndexByHex(_am->nodes(), nodeHex);
+                if (liveIdx >= 0) {
+                    auto& node = const_cast<DiscoveredNode&>(_am->nodes()[liveIdx]);
+                    node.saved = !node.saved;
+                    if (node.saved) _am->saveContacts();
+                    changed = true;
+                }
+            }
+            if (changed) rebuildList();
         }
         return true;
     }

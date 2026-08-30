@@ -1,5 +1,6 @@
 #include "MessageStore.h"
 #include "config/Config.h"
+#include "platform/CoreSync.h"
 #include "util/PerfTrace.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -492,6 +493,7 @@ std::vector<LXMFMessage> MessageStore::loadConversationTail(const std::string& p
 
     bool loadedFromSD = false;
     if (_externalStorageEnabled && _sd && _sd->isReady()) {
+        CoreSync::SpiBusGuard busGuard;
         String sdDir = sdConversationDir(peerHex);
         File d = _sd->openDir(sdDir.c_str());
         if (d && d.isDirectory()) {
@@ -573,6 +575,7 @@ std::vector<std::string> MessageStore::loadRecentMessageIds(size_t maxIds) const
 
 int MessageStore::messageCount(const std::string& peerHex) const {
     if (_externalStorageEnabled && _sd && _sd->isReady()) {
+        CoreSync::SpiBusGuard busGuard;
         String sdDir = sdConversationDir(peerHex);
         File d = _sd->openDir(sdDir.c_str());
         if (d && d.isDirectory()) {
@@ -599,6 +602,7 @@ int MessageStore::messageCount(const std::string& peerHex) const {
 
 bool MessageStore::deleteConversation(const std::string& peerHex) {
     if (_externalStorageEnabled && _sd && _sd->isReady()) {
+        CoreSync::SpiBusGuard busGuard;
         String sdDir = sdConversationDir(peerHex);
         File d = _sd->openDir(sdDir.c_str());
         if (d && d.isDirectory()) {
@@ -704,6 +708,7 @@ void MessageStore::markConversationRead(const std::string& peerHex) {
     };
 
     if (_externalStorageEnabled && _sd && _sd->isReady()) {
+        CoreSync::SpiBusGuard busGuard;
         String sdDir = sdConversationDir(peerHex);
         markInDir([&](const char* p) { return _sd->openDir(p); },
                   [&](const char* p, const String& d) { _sd->writeString(p, d); return true; },
@@ -791,6 +796,7 @@ bool MessageStore::updateMessageStatus(const std::string& peerHex, double timest
     bool updated = false;
 
     if (_externalStorageEnabled && _sd && _sd->isReady()) {
+        CoreSync::SpiBusGuard busGuard;
         String sdDir = sdConversationDir(peerHex);
         updated = updateInDir(
             [&](const char* p) { return _sd->openDir(p); },
@@ -882,6 +888,7 @@ ConversationSummary MessageStore::buildSummaryForPeer(
 
     bool loadedFromSD = false;
     if (_externalStorageEnabled && _sd && _sd->isReady()) {
+        CoreSync::SpiBusGuard busGuard;
         String sdDir = sdConversationDir(peerHex);
         File d = _sd->openDir(sdDir.c_str());
         if (d && d.isDirectory()) {
@@ -1125,6 +1132,7 @@ void MessageStore::enforceFlashLimit(const std::string& peerHex) {
 
 void MessageStore::enforceSDLimit(const std::string& peerHex) {
     if (!_externalStorageEnabled || !_sd || !_sd->isReady()) return;
+    CoreSync::SpiBusGuard busGuard;
     String dir = sdConversationDir(peerHex);
     std::vector<String> files;
     File d = _sd->openDir(dir.c_str());

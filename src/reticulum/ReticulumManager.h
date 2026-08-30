@@ -71,7 +71,9 @@ private:
     SDStore* _sd = nullptr;
     bool _transportActive = false;
     unsigned long _lastPersist = 0;
+    unsigned long _lastIdentityPersist = 0;
     unsigned long _lastAnnounceTime = 0;
     uint8_t _persistCycle = 0;  // Rotating: 0=known destinations, 1=SD backup
+    static constexpr unsigned long IDENTITY_PERSIST_MIN_INTERVAL_MS = 15UL * 60UL * 1000UL;
     static uint32_t _announceFilterCount;
 };

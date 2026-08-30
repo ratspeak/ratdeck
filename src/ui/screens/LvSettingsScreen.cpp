@@ -1,6 +1,7 @@
 #include "LvSettingsScreen.h"
 #include "ui/Theme.h"
 #include "ui/LvTheme.h"
+#include "platform/CoreSync.h"
 #include "ui/LvInput.h"
 #include "config/Config.h"
 #include "config/UserConfig.h"
@@ -255,7 +256,11 @@ void LvSettingsScreen::runFormatSD() {
         return;
     }
     if (_ui) _ui->lvStatusBar().showToast("Formatting SD card...", 2000);
-    bool ok = _sd->formatForRsDeck();
+    bool ok;
+    {
+        CoreSync::RnsGuard backendGuard;
+        ok = _sd->formatForRsDeck();
+    }
     if (_ui) _ui->lvStatusBar().showToast(ok ? "SD card formatted" : "SD format failed", 1500);
     rebuildItemList();
 }
@@ -268,7 +273,11 @@ void LvSettingsScreen::runWipeSD() {
         return;
     }
     if (_ui) _ui->lvStatusBar().showToast("Erasing rsDeck SD data...", 2000);
-    bool ok = _sd->wipeRsDeck();
+    bool ok;
+    {
+        CoreSync::RnsGuard backendGuard;
+        ok = _sd->wipeRsDeck();
+    }
     if (_ui) _ui->lvStatusBar().showToast(ok ? "SD data erased" : "SD erase failed", 1500);
     rebuildItemList();
 }
@@ -276,11 +285,14 @@ void LvSettingsScreen::runWipeSD() {
 void LvSettingsScreen::runFactoryReset() {
     _confirmingReset = false;
     if (_ui) _ui->lvStatusBar().showToast("Erasing device...", 3000);
-    if (_sd && _sd->isReady()) _sd->wipeRsDeck();
-    if (_flash) _flash->format();
-    nvs_flash_erase();
-    delay(1500);  // Long enough for key state to clear before reboot
-    ESP.restart();
+    {
+        CoreSync::RnsGuard backendGuard;
+        if (_sd && _sd->isReady()) _sd->wipeRsDeck();
+        if (_flash) _flash->format();
+        nvs_flash_erase();
+        delay(1500);  // Long enough for key state to clear before reboot
+        ESP.restart();
+    }
 }
 
 void LvSettingsScreen::runEnableDevMode() {
@@ -289,8 +301,11 @@ void LvSettingsScreen::runEnableDevMode() {
         rebuildItemList();
         return;
     }
-    _cfg->settings().devMode = true;
-    applyAndSave();
+    {
+        CoreSync::RnsGuard backendGuard;
+        _cfg->settings().devMode = true;
+        applyAndSave();
+    }
     buildItems();
     enterCategory(_categoryIdx);
     if (_ui) _ui->lvStatusBar().showToast("Developer radio controls unlocked", 1500);
@@ -452,8 +467,14 @@ void LvSettingsScreen::buildItems() {
         newId.formatter = [](int) { return String("[Enter]"); };
         newId.action = [this, &s]() {
             if (!_idMgr) { if (_ui) _ui->lvStatusBar().showToast("Not available", 1200); return; }
-            if (_idMgr->count() >= 8) { if (_ui) _ui->lvStatusBar().showToast("Identity slots full", 1200); return; }
-            int idx = _idMgr->createIdentity(s.displayName);
+            bool slotsFull;
+            int idx = -1;
+            {
+                CoreSync::RnsGuard backendGuard;
+                slotsFull = _idMgr->count() >= 8;
+                if (!slotsFull) idx = _idMgr->createIdentity(s.displayName);
+            }
+            if (slotsFull) { if (_ui) _ui->lvStatusBar().showToast("Identity slots full", 1200); return; }
             if (idx >= 0) {
                 if (_ui) _ui->lvStatusBar().showToast("Identity created", 1200);
                 buildItems();
@@ -474,23 +495,28 @@ void LvSettingsScreen::buildItems() {
                 return;
             }
             if (!_sd->exists(SD_PATH_IMPORT_IDENTITY) && !_sd->exists(SD_PATH_IMPORT_ID)) {
-                File dir = _sd->openDir(SD_PATH_IDENTITY_DIR);
                 int identityFiles = 0;
-                while (dir) {
-                    File entry = dir.openNextFile();
-                    if (!entry) break;
-                    if (!entry.isDirectory()) {
-                        String name = entry.name();
-                        name.toLowerCase();
-                        bool reservedIdentityFile = name == "identity.key" || name.endsWith("/identity.key") ||
-                            name == "identity.identity" || name.endsWith("/identity.identity");
-                        if (!reservedIdentityFile && (name.endsWith(".identity") || name.endsWith(".key"))) {
-                            identityFiles++;
+                {
+                    // Hold the shared SPI bus across the whole dir walk; openDir's
+                    // own guard only covers the initial open, not this iteration.
+                    CoreSync::SpiBusGuard busGuard;
+                    File dir = _sd->openDir(SD_PATH_IDENTITY_DIR);
+                    while (dir) {
+                        File entry = dir.openNextFile();
+                        if (!entry) break;
+                        if (!entry.isDirectory()) {
+                            String name = entry.name();
+                            name.toLowerCase();
+                            bool reservedIdentityFile = name == "identity.key" || name.endsWith("/identity.key") ||
+                                name == "identity.identity" || name.endsWith("/identity.identity");
+                            if (!reservedIdentityFile && (name.endsWith(".identity") || name.endsWith(".key"))) {
+                                identityFiles++;
+                            }
                         }
+                        entry.close();
                     }
-                    entry.close();
+                    dir.close();
                 }
-                dir.close();
                 if (identityFiles == 0) {
                     if (_ui) _ui->lvStatusBar().showToast("Missing identity file", 1200);
                     return;
@@ -504,11 +530,17 @@ void LvSettingsScreen::buildItems() {
                 if (_ui) _ui->lvStatusBar().showToast("Not available", 1200);
                 return;
             }
-            if (_idMgr->count() >= 8) {
+            bool slotsFull;
+            int idx = -1;
+            {
+                CoreSync::RnsGuard backendGuard;
+                slotsFull = _idMgr->count() >= 8;
+                if (!slotsFull) idx = _idMgr->importIdentity(s.displayName);
+            }
+            if (slotsFull) {
                 if (_ui) _ui->lvStatusBar().showToast("Identity slots full", 1200);
                 return;
             }
-            int idx = _idMgr->importIdentity(s.displayName);
             if (idx >= 0) {
                 if (_ui) _ui->lvStatusBar().showToast("Identity imported", 1200);
                 buildItems();
@@ -687,10 +719,13 @@ void LvSettingsScreen::buildItems() {
         };
         devModeItem.action = [this, &s]() {
             if (s.devMode) {
-                s.devMode = false;
+                {
+                    CoreSync::RnsGuard backendGuard;
+                    s.devMode = false;
+                    applyAndSave();
+                }
                 _confirmingDevMode = false;
                 clearConfirmations();
-                applyAndSave();
                 buildItems();
                 enterCategory(_categoryIdx);
                 if (_ui) _ui->lvStatusBar().showToast("Developer radio controls locked", 1500);
@@ -851,14 +886,21 @@ void LvSettingsScreen::buildItems() {
             return ssid.isEmpty() ? String("Empty") : String("[Enter]");
         };
         forgetItem.action = [this, &s]() {
-            size_t slot = selectedWiFiSlot(s);
-            if (slot >= s.wifiSTANetworks.size() || s.wifiSTANetworks[slot].ssid.isEmpty()) {
+            bool cleared = false;
+            {
+                CoreSync::RnsGuard backendGuard;
+                size_t slot = selectedWiFiSlot(s);
+                if (slot < s.wifiSTANetworks.size() && !s.wifiSTANetworks[slot].ssid.isEmpty()) {
+                    s.wifiSTANetworks[slot].ssid = "";
+                    s.wifiSTANetworks[slot].password = "";
+                    applyAndSave();
+                    cleared = true;
+                }
+            }
+            if (!cleared) {
                 if (_ui) _ui->lvStatusBar().showToast("WiFi profile already empty", 1200);
                 return;
             }
-            s.wifiSTANetworks[slot].ssid = "";
-            s.wifiSTANetworks[slot].password = "";
-            applyAndSave();
             if (_ui) _ui->lvStatusBar().showToast("WiFi profile cleared", 1200);
         };
         _items.push_back(forgetItem);
@@ -995,16 +1037,30 @@ void LvSettingsScreen::buildItems() {
     // Diagnostics
     int infoStart = idx;
     _items.push_back({"RNS Transport", SettingType::READONLY, nullptr, nullptr,
-        [this](int) { return _rns && _rns->isTransportActive() ? String("ACTIVE") : String("OFFLINE"); }});
+        [this](int) {
+            CoreSync::RnsTryGuard backendGuard(0);
+            if (!backendGuard.held()) return String("Busy");
+            return _rns && _rns->isTransportActive() ? String("ACTIVE") : String("OFFLINE");
+        }});
     idx++;
     _items.push_back({"Known Paths", SettingType::READONLY, nullptr, nullptr,
-        [this](int) { return _rns ? String((int)_rns->pathCount()) : String("0"); }});
+        [this](int) {
+            CoreSync::RnsTryGuard backendGuard(0);
+            if (!backendGuard.held()) return String("Busy");
+            return _rns ? String((int)_rns->pathCount()) : String("0");
+        }});
     idx++;
     _items.push_back({"Live Links", SettingType::READONLY, nullptr, nullptr,
-        [this](int) { return _rns ? String((int)_rns->linkCount()) : String("0"); }});
+        [this](int) {
+            CoreSync::RnsTryGuard backendGuard(0);
+            if (!backendGuard.held()) return String("Busy");
+            return _rns ? String((int)_rns->linkCount()) : String("0");
+        }});
     idx++;
     _items.push_back({"LoRa Driver", SettingType::READONLY, nullptr, nullptr,
         [this](int) {
+            CoreSync::RnsTryGuard backendGuard(0);
+            if (!backendGuard.held()) return String("Busy");
             if (_radio && _radio->isRadioOnline()) {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "SF%d BW%luk %ddBm",
@@ -1035,6 +1091,8 @@ void LvSettingsScreen::buildItems() {
     idx++;
     _categories.push_back({"Diagnostics", infoStart, idx - infoStart,
         [this]() -> String {
+            CoreSync::RnsTryGuard backendGuard(0);
+            if (!backendGuard.held()) return String("Busy");
             if (!_rns || !_rns->isTransportActive()) return String("Transport offline");
             String summary = String("Paths ") + String((int)_rns->pathCount());
             summary += " / Links ";
@@ -1075,6 +1133,7 @@ void LvSettingsScreen::buildItems() {
         announceItem.formatter = [](int) { return String("[Enter]"); };
         announceItem.action = [this]() {
             if (_rns && _cfg) {
+                CoreSync::RnsGuard backendGuard;
                 RNS::Bytes appData = encodeAnnounceName(_cfg->settings().displayName);
                 _rns->announce(appData);
                 if (_ui) { _ui->lvStatusBar().flashAnnounce(); _ui->lvStatusBar().showToast("Announce sent"); }
@@ -1602,6 +1661,7 @@ void LvSettingsScreen::rebuildItemList() {
 void LvSettingsScreen::selectWifiResult(int resultIdx) {
     if (!_cfg || resultIdx < 0 || resultIdx >= (int)_wifiResults.size()) return;
 
+    CoreSync::RnsGuard backendGuard;
     auto& net = _wifiResults[resultIdx];
     auto& nets = _cfg->settings().wifiSTANetworks;
     while (nets.size() <= _wifiTargetSlot && nets.size() < WIFI_STA_MAX_NETWORKS) {
@@ -1820,10 +1880,13 @@ bool LvSettingsScreen::handleKey(const KeyEvent& event) {
                     }
                 };
                 if (event.enter || event.character == '\n' || event.character == '\r') {
-                    if (item.textSetter) item.textSetter(_editText);
+                    {
+                        CoreSync::RnsGuard backendGuard;
+                        if (item.textSetter) item.textSetter(_editText);
+                        applyAndSave();
+                    }
                     _textEditing = false;
                     _editValueLbl = nullptr;
-                    applyAndSave();
                     rebuildItemList();
                     return true;
                 }
@@ -1864,10 +1927,14 @@ bool LvSettingsScreen::handleKey(const KeyEvent& event) {
                 if (event.enter || event.character == '\n' || event.character == '\r') {
                     auto& item = _items[_selectedIdx];
                     _editValue = freqRecompose();
-                    if (item.setter) item.setter(_editValue);
+                    {
+                        CoreSync::RnsGuard backendGuard;
+                        if (item.setter) item.setter(_editValue);
+                        applyAndSave();
+                    }
                     _freqEditing = false; _editing = false;
                     _editValueLbl = nullptr;
-                    applyAndSave(); rebuildItemList(); return true;
+                    rebuildItemList(); return true;
                 }
                 if (event.del || event.character == 8) {
                     if (_freqCursor > 0) _freqCursor--;
@@ -1911,10 +1978,13 @@ bool LvSettingsScreen::handleKey(const KeyEvent& event) {
                 }
                 if (event.enter || event.character == '\n' || event.character == '\r') {
                     if (_editValue < item.minVal) _editValue = item.minVal;
-                    if (item.setter) item.setter(_editValue);
+                    {
+                        CoreSync::RnsGuard backendGuard;
+                        if (item.setter) item.setter(_editValue);
+                        applyAndSave();
+                    }
                     _editing = false;
                     _numericTyping = false;
-                    applyAndSave();
                     rebuildItemList(); return true;
                 }
                 if (event.del || event.character == 8) {
@@ -1965,9 +2035,12 @@ bool LvSettingsScreen::handleKey(const KeyEvent& event) {
                     rebuildItemList();
                 } else if (item.type == SettingType::TOGGLE) {
                     clearConfirmations();
-                    int val = item.getter ? item.getter() : 0;
-                    if (item.setter) item.setter(val ? 0 : 1);
-                    applyAndSave();
+                    {
+                        CoreSync::RnsGuard backendGuard;
+                        int val = item.getter ? item.getter() : 0;
+                        if (item.setter) item.setter(val ? 0 : 1);
+                        applyAndSave();
+                    }
                     rebuildItemList();
                 } else if (strcmp(item.label, "Frequency") == 0 && item.type == SettingType::INTEGER) {
                     clearConfirmations();
@@ -2150,6 +2223,7 @@ String LvSettingsScreen::freqFormatWithCursor() const {
 
 void LvSettingsScreen::applyAndSave() {
     if (!_cfg) return;
+    CoreSync::RnsGuard backendGuard;
     auto& s = _cfg->settings();
     // Theme switch applies live: palette globals -> shared styles -> shell.
     // Our own rows re-read Theme:: on the rebuild that follows every commit.

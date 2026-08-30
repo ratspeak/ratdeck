@@ -5,6 +5,7 @@
 
 #include "SX1262.h"
 #include "config/BoardConfig.h"
+#include "platform/CoreSync.h"
 
 SX1262* SX1262::_instance = nullptr;
 
@@ -94,6 +95,7 @@ void SX1262::writeRegister(uint16_t address, uint8_t value) {
 uint8_t IRAM_ATTR SX1262::singleTransfer(uint8_t opcode, uint16_t address, uint8_t value) {
     waitOnBusy();
     uint8_t response;
+    CoreSync::SpiBusGuard busGuard;  // serialize against display/SD on shared FSPI bus
     _spiModem->beginTransaction(_spiSettings);
     digitalWrite(_ss, LOW);
     _spiModem->transfer(opcode);
@@ -110,6 +112,7 @@ uint8_t IRAM_ATTR SX1262::singleTransfer(uint8_t opcode, uint16_t address, uint8
 
 void SX1262::executeOpcode(uint8_t opcode, uint8_t* buffer, uint8_t size) {
     waitOnBusy();
+    CoreSync::SpiBusGuard busGuard;
     _spiModem->beginTransaction(_spiSettings);
     digitalWrite(_ss, LOW);
     _spiModem->transfer(opcode);
@@ -122,6 +125,7 @@ void SX1262::executeOpcode(uint8_t opcode, uint8_t* buffer, uint8_t size) {
 
 void SX1262::executeOpcodeRead(uint8_t opcode, uint8_t* buffer, uint8_t size) {
     waitOnBusy();
+    CoreSync::SpiBusGuard busGuard;
     _spiModem->beginTransaction(_spiSettings);
     digitalWrite(_ss, LOW);
     _spiModem->transfer(opcode);
@@ -135,6 +139,7 @@ void SX1262::executeOpcodeRead(uint8_t opcode, uint8_t* buffer, uint8_t size) {
 
 void SX1262::writeBuffer(const uint8_t* buffer, size_t size) {
     waitOnBusy();
+    CoreSync::SpiBusGuard busGuard;
     _spiModem->beginTransaction(_spiSettings);
     digitalWrite(_ss, LOW);
     _spiModem->transfer(OP_FIFO_WRITE_6X);
@@ -149,6 +154,7 @@ void SX1262::writeBuffer(const uint8_t* buffer, size_t size) {
 
 void SX1262::readBuffer(uint8_t* buffer, size_t size) {
     waitOnBusy();
+    CoreSync::SpiBusGuard busGuard;
     _spiModem->beginTransaction(_spiSettings);
     digitalWrite(_ss, LOW);
     _spiModem->transfer(OP_FIFO_READ_6X);

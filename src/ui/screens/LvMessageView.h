@@ -2,6 +2,7 @@
 
 #include "ui/UIManager.h"
 #include "reticulum/LXMFMessage.h"
+#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
@@ -55,6 +56,7 @@ private:
     unsigned long _lastRefreshMs = 0;
     std::vector<LXMFMessage> _cachedMsgs;
     bool _markReadPending = false;
+    std::atomic<bool> _statusRefreshPending{false};
 
     void updateMessageStatus(int msgIdx, LXMFStatus status);
     static void applyStatusGlyph(lv_obj_t* lbl, LXMFStatus status);
